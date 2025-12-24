@@ -26,7 +26,7 @@ python -m venv .venv
 
 ## Déploiement Linux avec systemd
 
-Le template du service est dans [systemd/etst.service](systemd/etst.service).
+Le template du service est dans [systemd/etstBotDiscord.service](systemd/etstBotDiscord.service).
 
 Exemple d’installation dans `/opt/etst-bot`:
 
@@ -42,12 +42,12 @@ python3 -m venv .venv
 sudo cp .env.example .env
 sudo nano .env
 
-sudo cp systemd/etst.service /etc/systemd/system/etst.service
+sudo cp systemd/etstBotDiscord.service /etc/systemd/system/etstBotDiscord.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now etst
+sudo systemctl enable --now etstBotDiscord
 
-sudo systemctl status etst
-journalctl -u etst -f
+sudo systemctl status etstBotDiscord
+journalctl -u etstBotDiscord -f
 ```
 
 ## Commandes
