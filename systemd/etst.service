@@ -1,0 +1,25 @@
+[Unit]
+Description=ETST Discord Bot (Eternal Storm)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/etst-bot
+# Create a venv in /opt/etst-bot/.venv and install requirements
+ExecStart=/opt/etst-bot/.venv/bin/python -m src.main
+Restart=on-failure
+RestartSec=5
+
+# Recommended: store secrets in an EnvironmentFile
+EnvironmentFile=/opt/etst-bot/.env
+
+# Hardening (optional, safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/etst-bot
+
+[Install]
+WantedBy=multi-user.target
