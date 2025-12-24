@@ -6,6 +6,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/etst-bot
+# Run as a dedicated, unprivileged user
+User=etst
+Group=etst
+
 # Create a venv in /opt/etst-bot/.venv and install requirements
 ExecStart=/opt/etst-bot/.venv/bin/python -m src.main
 Restart=on-failure
@@ -13,6 +17,9 @@ RestartSec=5
 
 # Recommended: store secrets in an EnvironmentFile
 EnvironmentFile=/opt/etst-bot/.env
+
+# Keep secrets readable only by the service user
+UMask=0077
 
 # Hardening (optional, safe defaults)
 NoNewPrivileges=true
