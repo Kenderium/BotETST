@@ -79,6 +79,14 @@ class TrnHttpError(RuntimeError):
 		self.payload = payload
 
 
+class RapidApiHttpError(RuntimeError):
+	def __init__(self, status: int, url: str, payload: object):
+		super().__init__(f"RapidAPI HTTP {status}")
+		self.status = status
+		self.url = url
+		self.payload = payload
+
+
 async def _trn_get_profile(
 	*,
 	api_key: str,
@@ -186,7 +194,7 @@ async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 					data = {"raw": text}
 
 			if resp.status >= 400:
-				raise RuntimeError(f"RapidAPI HTTP {resp.status} for {url}: {data}")
+				raise RapidApiHttpError(resp.status, url, data)
 			if isinstance(data, dict):
 				return data
 			raise RuntimeError(f"RapidAPI returned non-object JSON for {url}: {type(data).__name__}")
@@ -569,6 +577,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			url_path_or_full = url_tmpl.format(
 				platform=quote(platform, safe=""),
 				identifier=quote(identifier, safe=""),
+				player=quote(identifier, safe=""),
 			)
 			url = (
 				f"https://{rapid_host}{url_path_or_full}"
@@ -597,11 +606,25 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
 				print(f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
 				await ctx.send(embed=embed)
+			except RapidApiHttpError as e:
+				print(f"RapidAPI RocketLeague HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+				if e.status in {401, 403}:
+					await ctx.send(
+						"RapidAPI refuse l’accès (401/403). Vérifie `RAPIDAPI_KEY` et que l’API est bien active sur ton compte."
+					)
+				elif e.status == 404:
+					await ctx.send(
+						"Endpoint introuvable (404). Vérifie `RL_RAPIDAPI_URL_TEMPLATE` (pour rocket-league1: `/ranks/{identifier}`)."
+					)
+				elif e.status == 429:
+					await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
 			except Exception as e:
 				print(f"RapidAPI RocketLeague error: {type(e).__name__}: {e}", flush=True)
 				await ctx.send(
 					"Impossible de récupérer les stats Rocket League (RapidAPI). "
-					"Vérifie `RAPIDAPI_KEY`, `RL_RAPIDAPI_HOST`, `RL_RAPIDAPI_URL_TEMPLATE` et l’identifiant."
+					"Check les logs du bot (journalctl) pour le détail."
 				)
 			return
 
