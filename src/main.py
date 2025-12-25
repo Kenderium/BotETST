@@ -1,9 +1,9 @@
 
+import json
 import os
 import random
 import sys
 import time
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -299,12 +299,15 @@ class _UserIdStore:
 
 
 async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
-	import aiohttp
 	import json
+
+	import aiohttp
 
 	headers = {
 		"X-RapidAPI-Key": api_key,
 		"X-RapidAPI-Host": api_host,
+		"User-Agent": "RapidAPI Playground",
+		"Accept-Encoding": "identity",
 	}
 	async with aiohttp.ClientSession() as session:
 		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -623,6 +626,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 	async def _ark_status_text_etst1() -> str:
 		import asyncio
+
 		import a2s  # type: ignore
 
 		host, port = _get_ark_target_etst1()
@@ -650,8 +654,9 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		return await asyncio.to_thread(_probe)
 
 	async def _mc_status_text() -> str:
-		from mcstatus import JavaServer  # type: ignore
 		import asyncio
+
+		from mcstatus import JavaServer  # type: ignore
 
 		host, port = _get_mc_target()
 
