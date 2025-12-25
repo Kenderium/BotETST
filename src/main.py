@@ -63,6 +63,22 @@ def _split_platform_identifier(raw: str, default_platform: str) -> tuple[str, st
 	return default_platform.strip().lower() or "steam", raw
 
 
+def _looks_like_trn_app_id(value: str) -> bool:
+	# TRN docs show an app id formatted as a UUID.
+	v = value.strip()
+	if len(v) != 36:
+		return False
+	parts = v.split("-")
+	return [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+class TrnHttpError(RuntimeError):
+	def __init__(self, status: int, payload: object):
+		super().__init__(f"TRN HTTP {status}")
+		self.status = status
+		self.payload = payload
+
+
 async def _trn_get_profile(
 	*,
 	api_key: str,
@@ -82,7 +98,7 @@ async def _trn_get_profile(
 		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
 			data = await resp.json(content_type=None)
 			if resp.status >= 400:
-				raise RuntimeError(f"TRN HTTP {resp.status}: {data}")
+				raise TrnHttpError(resp.status, data)
 			return data
 
 
@@ -221,12 +237,17 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		)
 		embed.add_field(
 			name=f"{p}stats smite2 <pseudo>",
-			value="(À brancher) Stats Smite 2.",
+			value="Stats profil Smite 2 (via TRN). Ex: `!stats smite2 steam:Pseudo`",
 			inline=False,
 		)
 		embed.add_field(
 			name=f"{p}stats rocketleague <pseudo>",
-			value="(À brancher) Stats Rocket League.",
+			value="Stats profil Rocket League (via TRN). Ex: `!stats rocketleague epic:Pseudo`",
+			inline=False,
+		)
+		embed.add_field(
+			name=f"{p}stats smite1 <pseudo>",
+			value="Stats profil Smite 1 (via TRN). Ex: `!stats smite1 steam:Pseudo`",
 			inline=False,
 		)
 		embed.set_footer(text="Eternal Storm — Smite, Overwatch 2, Rocket League, Ark, Minecraft, Fortnite, etc.")
@@ -370,6 +391,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			if not api_key:
 				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite2`.")
 				return
+			if not _looks_like_trn_app_id(api_key):
+				await ctx.send(
+					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
+					"Dans la doc TRN, la valeur attendue est l’App ID (format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)."
+				)
 			platform_default = os.getenv("TRN_SMITE2_PLATFORM", "steam").strip() or "steam"
 			platform, identifier = _split_platform_identifier(pseudo, platform_default)
 			try:
@@ -385,12 +411,19 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					profile_url=f"https://tracker.gg/smite2/profile/{platform}/{quote(identifier, safe='')}"
 				)
 				await ctx.send(embed=embed)
+			except TrnHttpError as e:
+				print(f"TRN Smite2 HTTP {e.status}: {e.payload}")
+				if e.status in {401, 403}:
+					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
+				elif e.status == 404:
+					await ctx.send("Profil introuvable sur TRN. Essaie `steam:Pseudo` ou une autre plateforme.")
+				elif e.status == 429:
+					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
 				print(f"TRN Smite2 error: {type(e).__name__}: {e}")
-				await ctx.send(
-					"Impossible de récupérer les stats Smite 2 (TRN). "
-					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo`)."
-				)
+				await ctx.send("Impossible de récupérer les stats Smite 2 (TRN). Check les logs du bot.")
 			return
 
 		if game_key in {"smite1", "smite 1", "smite_1", "smite"}:
@@ -398,6 +431,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			if not api_key:
 				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite1`.")
 				return
+			if not _looks_like_trn_app_id(api_key):
+				await ctx.send(
+					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
+					"Dans la doc TRN, la valeur attendue est l’App ID."
+				)
 			platform_default = os.getenv("TRN_SMITE1_PLATFORM", "steam").strip() or "steam"
 			platform, identifier = _split_platform_identifier(pseudo, platform_default)
 			try:
@@ -413,12 +451,19 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					profile_url=f"https://tracker.gg/smite/profile/{platform}/{quote(identifier, safe='')}"
 				)
 				await ctx.send(embed=embed)
+			except TrnHttpError as e:
+				print(f"TRN Smite HTTP {e.status}: {e.payload}")
+				if e.status in {401, 403}:
+					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
+				elif e.status == 404:
+					await ctx.send("Profil introuvable sur TRN. Essaie `steam:Pseudo` ou une autre plateforme.")
+				elif e.status == 429:
+					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
 				print(f"TRN Smite error: {type(e).__name__}: {e}")
-				await ctx.send(
-					"Impossible de récupérer les stats Smite (TRN). "
-					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo`)."
-				)
+				await ctx.send("Impossible de récupérer les stats Smite (TRN). Check les logs du bot.")
 			return
 
 		if game_key in {"rocketleague", "rocket", "rl"}:
@@ -426,6 +471,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			if not api_key:
 				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats rocketleague`.")
 				return
+			if not _looks_like_trn_app_id(api_key):
+				await ctx.send(
+					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
+					"Dans la doc TRN, la valeur attendue est l’App ID."
+				)
 			platform_default = os.getenv("TRN_RL_PLATFORM", "steam").strip() or "steam"
 			platform, identifier = _split_platform_identifier(pseudo, platform_default)
 			try:
@@ -441,12 +491,26 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					profile_url=f"https://tracker.gg/rocket-league/profile/{platform}/{quote(identifier, safe='')}"
 				)
 				await ctx.send(embed=embed)
+			except TrnHttpError as e:
+				print(f"TRN RocketLeague HTTP {e.status}: {e.payload}")
+				if e.status in {401, 403}:
+					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
+				elif e.status == 404:
+					# RL est fréquemment pénible côté Steam: parfois il faut le SteamID64, pas le pseudo.
+					if platform == "steam" and not identifier.isdigit():
+						await ctx.send(
+							"Profil introuvable sur TRN pour `steam`. Sur Rocket League, TRN peut nécessiter le **SteamID64** "
+							"au lieu d’un pseudo. Essaie aussi `epic:Pseudo` si c’est ton compte principal."
+						)
+					else:
+						await ctx.send("Profil introuvable sur TRN. Vérifie la plateforme (`steam:`/`epic:`/`psn:`/`xbl:`) et l’identifiant.")
+				elif e.status == 429:
+					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
 				print(f"TRN RocketLeague error: {type(e).__name__}: {e}")
-				await ctx.send(
-					"Impossible de récupérer les stats Rocket League (TRN). "
-					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo` ou `epic:Pseudo`)."
-				)
+				await ctx.send("Impossible de récupérer les stats Rocket League (TRN). Check les logs du bot.")
 			return
 
 		await ctx.send("Jeu non supporté pour l’instant. Priorités actuelles: smite2, minecraft, rocketleague.")
