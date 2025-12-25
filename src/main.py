@@ -2,6 +2,8 @@
 import os
 import random
 import sys
+import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -173,6 +175,129 @@ def _trn_build_embed(*, title: str, payload: dict, profile_url: str) -> discord.
 	return embed
 
 
+class _TtlCache:
+	def __init__(self) -> None:
+		self._store: dict[str, tuple[float, object]] = {}
+		self._locks: dict[str, "asyncio.Lock"] = {}
+
+	def get(self, key: str) -> object | None:
+		now = time.monotonic()
+		item = self._store.get(key)
+		if item is None:
+			return None
+		expires_at, value = item
+		if expires_at <= now:
+			self._store.pop(key, None)
+			return None
+		return value
+
+	def set(self, key: str, value: object, ttl_seconds: float) -> None:
+		self._store[key] = (time.monotonic() + ttl_seconds, value)
+
+	async def get_or_set(self, *, key: str, ttl_seconds: float, factory):
+		import asyncio
+
+		cached = self.get(key)
+		if cached is not None:
+			return cached
+
+		lock = self._locks.get(key)
+		if lock is None:
+			lock = asyncio.Lock()
+			self._locks[key] = lock
+
+		async with lock:
+			cached2 = self.get(key)
+			if cached2 is not None:
+				return cached2
+			value = await factory()
+			self.set(key, value, ttl_seconds)
+			return value
+
+
+class _UserIdStore:
+	def __init__(self, file_path: str) -> None:
+		self._file_path = file_path
+		self._lock = None
+		self._data: dict[str, dict[str, str]] | None = None
+
+	async def _get_lock(self):
+		import asyncio
+
+		if self._lock is None:
+			self._lock = asyncio.Lock()
+		return self._lock
+
+	def _ensure_loaded(self) -> dict[str, dict[str, str]]:
+		if self._data is not None:
+			return self._data
+		try:
+			with open(self._file_path, "r", encoding="utf-8") as f:
+				obj = json.load(f)
+			if isinstance(obj, dict):
+				# expected: {"<discord_user_id>": {"steam": "...", "epic": "..."}}
+				self._data = {
+					str(k): (v if isinstance(v, dict) else {})  # type: ignore[dict-item]
+					for k, v in obj.items()
+				}
+			else:
+				self._data = {}
+		except FileNotFoundError:
+			self._data = {}
+		except Exception:
+			# Corrupt file: start fresh (and keep the old file as-is).
+			self._data = {}
+		return self._data
+
+	def _atomic_save(self, data: dict[str, dict[str, str]]) -> None:
+		os.makedirs(os.path.dirname(self._file_path), exist_ok=True)
+		tmp = f"{self._file_path}.tmp"
+		with open(tmp, "w", encoding="utf-8") as f:
+			json.dump(data, f, ensure_ascii=False, indent=2)
+		os.replace(tmp, self._file_path)
+
+	async def get(self, user_id: int) -> dict[str, str]:
+		lock = await self._get_lock()
+		async with lock:
+			data = self._ensure_loaded()
+			return dict(data.get(str(user_id), {}))
+
+	async def set_value(self, user_id: int, key: str, value: str) -> None:
+		key = key.strip().lower()
+		if key not in {"steam", "epic"}:
+			raise ValueError("Invalid key")
+		value = value.strip()
+		lock = await self._get_lock()
+		async with lock:
+			data = self._ensure_loaded()
+			entry = data.get(str(user_id))
+			if not isinstance(entry, dict):
+				entry = {}
+			data[str(user_id)] = entry
+			entry[key] = value
+			self._atomic_save(data)
+
+	async def clear(self, user_id: int, which: str) -> None:
+		which = which.strip().lower() or "all"
+		if which not in {"steam", "epic", "all"}:
+			raise ValueError("Invalid clear option")
+		lock = await self._get_lock()
+		async with lock:
+			data = self._ensure_loaded()
+			uid = str(user_id)
+			if uid not in data:
+				return
+			if which == "all":
+				data.pop(uid, None)
+			else:
+				entry = data.get(uid, {})
+				if isinstance(entry, dict):
+					entry.pop(which, None)
+					if not entry:
+						data.pop(uid, None)
+			self._atomic_save(data)
+
+
 async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 	import aiohttp
 	import json
@@ -278,6 +403,15 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		help_command=None,
 	)
 
+	api_cache = _TtlCache()
+	TTL_MINECRAFT_SECONDS = 30.0
+	TTL_ARK_SECONDS = 30.0
+	TTL_TRN_SECONDS = 120.0
+	TTL_RL_SECONDS = 120.0
+
+	user_ids_path = os.path.join(os.getcwd(), "data", "user_ids.json")
+	user_ids = _UserIdStore(user_ids_path)
+
 	@bot.event
 	async def on_ready() -> None:
 		if bot.user is None:
@@ -319,6 +453,14 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		embed.add_field(name=f"{p}Grimdal", value="Invoque Grimdal.", inline=True)
 		embed.add_field(name=f"{p}Kenderium", value="Invoque Kenderium.", inline=True)
 		embed.add_field(
+			name=f"{p}id",
+			value=(
+				"Enregistre/affiche tes IDs Steam/Epic. "
+				"Ex: `!id steam MonSteam` • `!id epic MonEpic` • `!id clear all`"
+			),
+			inline=False,
+		)
+		embed.add_field(
 			name=f"{p}stats minecraft",
 			value="Status du serveur Minecraft (joueurs en ligne).",
 			inline=False,
@@ -343,8 +485,84 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			value="Stats profil Smite 1 (via TRN). Ex: `!stats smite1 steam:Pseudo`",
 			inline=False,
 		)
+		embed.add_field(
+			name="Astuce",
+			value=(
+				"Tu peux enregistrer tes pseudos une fois pour toutes :\n"
+				"• `!id steam <ton_steam>`\n"
+				"• `!id epic <ton_epic>`\n"
+				"Puis utiliser `!stats smite1` / `!stats smite2` / `!stats rocketleague` sans préciser le pseudo."
+			),
+			inline=False,
+		)
 		embed.set_footer(text="Eternal Storm — Smite, Overwatch 2, Rocket League, Ark, Minecraft, Fortnite, etc.")
 		await ctx.send(embed=embed)
+
+	@bot.command(name="id")
+	async def id_cmd(ctx: commands.Context, action: str = "show", kind: str = "", *, value: str = "") -> None:
+		"""Gère les identifiants enregistrés par utilisateur.
+
+		Usages:
+		- !id                      -> show
+		- !id show                 -> show
+		- !id steam <value>        -> set steam
+		- !id epic <value>         -> set epic
+		- !id set steam <value>    -> set steam
+		- !id clear [steam|epic|all]
+		"""
+		try:
+			action_l = (action or "").strip().lower()
+			kind_l = (kind or "").strip().lower()
+
+			# Shorthand: !id steam <value> / !id epic <value>
+			if action_l in {"steam", "epic"}:
+				kind_l = action_l
+				action_l = "set"
+				# value is already in `kind`+`value`? In this shorthand form, `kind` is the first word after action.
+				# With signature (action, kind, *, value), shorthand gives action=steam, kind=<first token of value>.
+				if kind and value:
+					value = f"{kind} {value}".strip()
+				else:
+					value = kind
+				kind_l = kind_l
+				kind = ""
+
+			if action_l in {"", "show", "get"}:
+				entry = await user_ids.get(ctx.author.id)
+				steam = entry.get("steam")
+				epic = entry.get("epic")
+				lines = []
+				lines.append(f"Steam: {steam if steam else '(non défini)'}")
+				lines.append(f"Epic: {epic if epic else '(non défini)'}")
+				lines.append("\nPour définir : `!id steam <valeur>` ou `!id epic <valeur>`")
+				lines.append("Pour effacer : `!id clear steam|epic|all`")
+				await ctx.send("\n".join(lines))
+				return
+
+			if action_l == "set":
+				if kind_l not in {"steam", "epic"}:
+					await ctx.send("Usage: `!id steam <valeur>` ou `!id epic <valeur>`")
+					return
+				if not value.strip():
+					await ctx.send(f"Usage: `!id {kind_l} <valeur>`")
+					return
+				await user_ids.set_value(ctx.author.id, kind_l, value)
+				await ctx.send(f"OK, {kind_l} enregistré.")
+				return
+
+			if action_l == "clear":
+				which = kind_l or "all"
+				if which not in {"steam", "epic", "all"}:
+					await ctx.send("Usage: `!id clear steam|epic|all`")
+					return
+				await user_ids.clear(ctx.author.id, which)
+				await ctx.send("OK, identifiant(s) effacé(s).")
+				return
+
+			await ctx.send("Usage: `!id` (voir), `!id steam <valeur>`, `!id epic <valeur>`, `!id clear steam|epic|all`")
+		except Exception as e:
+			print(f"[id_cmd] error: {e}", flush=True)
+			await ctx.send("Erreur interne lors de la gestion des IDs.")
 
 	@bot.command(name="hello")
 	async def hello(ctx: commands.Context) -> None:
@@ -454,30 +672,35 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 		if game_key in {"minecraft", "mc"}:
 			try:
-				await ctx.send(await _mc_status_text())
+				text = await api_cache.get_or_set(
+					key="minecraft_status",
+					ttl_seconds=TTL_MINECRAFT_SECONDS,
+					factory=_mc_status_text,
+				)
+				await ctx.send(text)
 			except Exception as e:
 				await ctx.send(
 					"Impossible de récupérer le status Minecraft. "
 					"Vérifie `MINECRAFT_SERVER` (souvent `:25565`). "
 					"Attention: `8123` est fréquemment le port Dynmap (web), pas le port Minecraft."
 				)
-				print(f"Minecraft status error: {type(e).__name__}: {e}")
 				print(f"Minecraft status error: {type(e).__name__}: {e}", flush=True)
 			return
 
 		if game_key in {"ark"}:
 			try:
-				await ctx.send(await _ark_status_text_etst1())
+				text = await api_cache.get_or_set(
+					key="ark_etst1_status",
+					ttl_seconds=TTL_ARK_SECONDS,
+					factory=_ark_status_text_etst1,
+				)
+				await ctx.send(text)
 			except Exception as e:
 				await ctx.send(
 					"Impossible de récupérer le status ARK. "
 					"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
 				)
 				print(f"ARK status error: {type(e).__name__}: {e}", flush=True)
-			return
-
-		if not pseudo.strip():
-			await ctx.send(f"Usage: `{settings.prefix}stats <jeu> <pseudo>`")
 			return
 
 		if game_key in {"smite2", "smite 2", "smite_2"}:
@@ -491,17 +714,32 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Dans la doc TRN, la valeur attendue est l’App ID (format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)."
 				)
 			platform_default = os.getenv("TRN_SMITE2_PLATFORM", "steam").strip() or "steam"
-			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			pseudo_effective = pseudo.strip()
+			if not pseudo_effective:
+				entry = await user_ids.get(ctx.author.id)
+				pseudo_effective = (entry.get("steam") or "").strip()
+				if not pseudo_effective:
+					await ctx.send(
+						"Pseudo Steam manquant. Enregistre-le avec `!id steam <ton_steam>` "
+						"ou passe-le en argument : `!stats smite2 <steam>`."
+					)
+					return
+			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
 			try:
-				payload = await _trn_get_profile(
-					api_key=api_key,
-					game_slug="smite2",
-					platform=platform,
-					identifier=identifier,
+				cache_key = f"trn:smite2:{platform}:{identifier}".lower()
+				payload = await api_cache.get_or_set(
+					key=cache_key,
+					ttl_seconds=TTL_TRN_SECONDS,
+					factory=lambda: _trn_get_profile(
+						api_key=api_key,
+						game_slug="smite2",
+						platform=platform,
+						identifier=identifier,
+					),
 				)
 				embed = _trn_build_embed(
 					title="TRN — Smite 2",
-					payload=payload,
+					payload=payload,  # type: ignore[arg-type]
 					profile_url=f"https://tracker.gg/smite2/profile/{platform}/{quote(identifier, safe='')}"
 				)
 				await ctx.send(embed=embed)
@@ -531,17 +769,32 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Dans la doc TRN, la valeur attendue est l’App ID."
 				)
 			platform_default = os.getenv("TRN_SMITE1_PLATFORM", "steam").strip() or "steam"
-			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			pseudo_effective = pseudo.strip()
+			if not pseudo_effective:
+				entry = await user_ids.get(ctx.author.id)
+				pseudo_effective = (entry.get("steam") or "").strip()
+				if not pseudo_effective:
+					await ctx.send(
+						"Pseudo Steam manquant. Enregistre-le avec `!id steam <ton_steam>` "
+						"ou passe-le en argument : `!stats smite1 <steam>`."
+					)
+					return
+			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
 			try:
-				payload = await _trn_get_profile(
-					api_key=api_key,
-					game_slug="smite",
-					platform=platform,
-					identifier=identifier,
+				cache_key = f"trn:smite:{platform}:{identifier}".lower()
+				payload = await api_cache.get_or_set(
+					key=cache_key,
+					ttl_seconds=TTL_TRN_SECONDS,
+					factory=lambda: _trn_get_profile(
+						api_key=api_key,
+						game_slug="smite",
+						platform=platform,
+						identifier=identifier,
+					),
 				)
 				embed = _trn_build_embed(
 					title="TRN — Smite",
-					payload=payload,
+					payload=payload,  # type: ignore[arg-type]
 					profile_url=f"https://tracker.gg/smite/profile/{platform}/{quote(identifier, safe='')}"
 				)
 				await ctx.send(embed=embed)
@@ -573,7 +826,17 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				return
 
 			platform_default = os.getenv("RL_PLATFORM", "steam").strip() or "steam"
-			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			pseudo_effective = pseudo.strip()
+			if not pseudo_effective:
+				entry = await user_ids.get(ctx.author.id)
+				pseudo_effective = (entry.get("epic") or "").strip()
+				if not pseudo_effective:
+					await ctx.send(
+						"Pseudo Epic manquant. Enregistre-le avec `!id epic <ton_epic>` "
+						"ou passe-le en argument : `!stats rocketleague <epic>`."
+					)
+					return
+			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
 			url_path_or_full = url_tmpl.format(
 				platform=quote(platform, safe=""),
 				identifier=quote(identifier, safe=""),
@@ -587,7 +850,12 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 			try:
 				print(f"RapidAPI RL GET {url}", flush=True)
-				payload = await _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host)
+				cache_key = f"rapidapi:rl:{rapid_host}:{url}".lower()
+				payload = await api_cache.get_or_set(
+					key=cache_key,
+					ttl_seconds=TTL_RL_SECONDS,
+					factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+				)
 				embed = discord.Embed(
 					title="Rocket League — RapidAPI",
 					description=f"Joueur: `{identifier}`",

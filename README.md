@@ -59,8 +59,10 @@ journalctl -u etstBotDiscord -f
 - `!Nicoow`, `!Lucas`, `!Grimdal`, `!Kenderium`
 - `!stats minecraft` (status serveur + joueurs en ligne)
 - `!stats ark` (joueurs en ligne sur le serveur ARK ETST1)
-- `!stats smite2 <pseudo>` (à brancher)
-- `!stats rocketleague <pseudo>` (à brancher)
+- `!id` (enregistrer/afficher tes IDs Steam/Epic)
+- `!stats smite1 [pseudo]` (si pseudo absent, utilise l’ID Steam enregistré via `!id`)
+- `!stats smite2 [pseudo]` (si pseudo absent, utilise l’ID Steam enregistré via `!id`)
+- `!stats rocketleague [pseudo]` (si pseudo absent, utilise l’ID Epic enregistré via `!id`)
 
 ## Variables d’environnement
 
