@@ -477,6 +477,16 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			inline=False,
 		)
 		embed.add_field(
+			name=f"{p}stats rl tournaments",
+			value="Tournois Rocket League en Europe",
+			inline=False,
+		)
+		embed.add_field(
+			name=f"{p}stats rl shop",
+			value="Shop Rocket League (featured items)",
+			inline=False,
+		)
+		embed.add_field(
 			name=f"{p}stats smite1 <pseudo>",
 			value="Stats profil Smite 1 (via TRN). Ex: `!stats smite1 steam:Pseudo`",
 			inline=False,
@@ -814,11 +824,133 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		if game_key in {"rocketleague", "rocket", "rl"}:
 			rapid_key = os.getenv("RAPIDAPI_KEY", "").strip()
 			rapid_host = os.getenv("RL_RAPIDAPI_HOST", "").strip()
-			url_tmpl = os.getenv("RL_RAPIDAPI_URL_TEMPLATE", "").strip()
-			if not rapid_key or not rapid_host or not url_tmpl:
+			
+			if not rapid_key or not rapid_host:
 				await ctx.send(
-					"Rocket League est configuré via RapidAPI. Il manque une variable d’env: "
-					"`RAPIDAPI_KEY`, `RL_RAPIDAPI_HOST` ou `RL_RAPIDAPI_URL_TEMPLATE`. "
+					"Rocket League est configuré via RapidAPI. Il manque une variable d'env: "
+					"`RAPIDAPI_KEY` ou `RL_RAPIDAPI_HOST`. "
+					"Voir README/.env.example."
+				)
+				return
+			
+			# Check for special commands: tournaments or shop
+			pseudo_lower = pseudo.strip().lower()
+			
+			# Tournaments command
+			if pseudo_lower == "tournaments":
+				try:
+					url = f"https://{rapid_host}/tournaments/europe"
+					print(f"RapidAPI RL Tournaments GET {url}", flush=True)
+					cache_key = f"rapidapi:rl:tournaments:europe".lower()
+					payload = await api_cache.get_or_set(
+						key=cache_key,
+						ttl_seconds=TTL_RL_SECONDS,
+						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+					)
+					embed = discord.Embed(
+						title="Rocket League — Tournois Europe",
+						color=discord.Color.blurple(),
+					)
+					
+					# Try to extract tournament info from payload
+					if isinstance(payload, dict):
+						# The API might return tournaments as a list or nested object
+						tournaments = payload.get("tournaments") or payload.get("data") or payload
+						if isinstance(tournaments, list):
+							for i, tournament in enumerate(tournaments[:10]):  # Limit to 10 tournaments
+								if isinstance(tournament, dict):
+									name = tournament.get("name") or tournament.get("title") or f"Tournoi {i+1}"
+									date = tournament.get("date") or tournament.get("start_date") or "Date inconnue"
+									region = tournament.get("region") or "Europe"
+									embed.add_field(
+										name=f"{name}",
+										value=f"Date: {date}\nRégion: {region}",
+										inline=False
+									)
+						if len(embed.fields) == 0:
+							# Fallback: show raw data keys
+							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
+							for k, v in _pick_scalar_stats(payload, limit=10):
+								leaf = k.rsplit(".", 1)[-1]
+								embed.add_field(name=leaf, value=str(v)[:100], inline=True)
+								
+					await ctx.send(embed=embed)
+				except RapidApiHttpError as e:
+					print(f"RapidAPI RL Tournaments HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+					if e.status in {401, 403}:
+						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
+					elif e.status == 404:
+						await ctx.send("Endpoint tournaments introuvable (404).")
+					elif e.status == 429:
+						await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+					else:
+						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
+				except Exception as e:
+					print(f"RapidAPI RL Tournaments error: {type(e).__name__}: {e}", flush=True)
+					await ctx.send("Impossible de récupérer les tournois Rocket League.")
+				return
+			
+			# Shop command
+			if pseudo_lower == "shop":
+				try:
+					url = f"https://{rapid_host}/shops/featured"
+					print(f"RapidAPI RL Shop GET {url}", flush=True)
+					cache_key = f"rapidapi:rl:shop:featured".lower()
+					payload = await api_cache.get_or_set(
+						key=cache_key,
+						ttl_seconds=TTL_RL_SECONDS,
+						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+					)
+					embed = discord.Embed(
+						title="Rocket League — Shop Featured",
+						color=discord.Color.blurple(),
+					)
+					
+					# Try to extract shop items from payload
+					if isinstance(payload, dict):
+						items = payload.get("items") or payload.get("featured") or payload.get("data") or payload
+						if isinstance(items, list):
+							for i, item in enumerate(items[:15]):  # Limit to 15 items
+								if isinstance(item, dict):
+									name = item.get("name") or item.get("title") or f"Item {i+1}"
+									price = item.get("price") or item.get("cost") or "?"
+									rarity = item.get("rarity") or ""
+									value_text = f"Prix: {price}"
+									if rarity:
+										value_text += f" • {rarity}"
+									embed.add_field(
+										name=name,
+										value=value_text,
+										inline=True
+									)
+						if len(embed.fields) == 0:
+							# Fallback: show raw data
+							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
+							for k, v in _pick_scalar_stats(payload, limit=10):
+								leaf = k.rsplit(".", 1)[-1]
+								embed.add_field(name=leaf, value=str(v)[:100], inline=True)
+								
+					await ctx.send(embed=embed)
+				except RapidApiHttpError as e:
+					print(f"RapidAPI RL Shop HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+					if e.status in {401, 403}:
+						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
+					elif e.status == 404:
+						await ctx.send("Endpoint shop introuvable (404).")
+					elif e.status == 429:
+						await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+					else:
+						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
+				except Exception as e:
+					print(f"RapidAPI RL Shop error: {type(e).__name__}: {e}", flush=True)
+					await ctx.send("Impossible de récupérer le shop Rocket League.")
+				return
+			
+			# Normal player stats lookup
+			url_tmpl = os.getenv("RL_RAPIDAPI_URL_TEMPLATE", "").strip()
+			if not url_tmpl:
+				await ctx.send(
+					"Il manque `RL_RAPIDAPI_URL_TEMPLATE` pour les stats de joueur. "
 					"Voir README/.env.example."
 				)
 				return
