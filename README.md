@@ -67,3 +67,12 @@ journalctl -u etstBotDiscord -f
 - `DISCORD_TOKEN` (obligatoire)
 - `MINECRAFT_SERVER` (ex: `play.example.com:25565`)
 - `ARK_ETST1_SERVER` (port query Steam/A2S, ex: `etst.duckdns.org:27015`)
+
+### Tracker Network (TRN) — stats profils
+
+Le bot peut interroger l’API publique TRN (tracker.gg) pour récupérer des stats profils.
+
+- `TRN_API_KEY` (obligatoire pour `!stats smite1|smite2|rocketleague`)
+- `TRN_RL_PLATFORM` (optionnel, défaut: `steam`) — tu peux aussi faire `!stats rocketleague steam:MonPseudo`
+- `TRN_SMITE1_PLATFORM` (optionnel, défaut: `steam`) — ex: `!stats smite1 steam:MonPseudo`
+- `TRN_SMITE2_PLATFORM` (optionnel, défaut: `steam`) — ex: `!stats smite2 steam:MonPseudo`

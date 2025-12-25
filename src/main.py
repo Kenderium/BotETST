@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 import discord
 from discord.ext import commands
@@ -47,6 +48,105 @@ def _split_host_port(raw: str, default_port: int) -> tuple[str, int]:
 		host, port_s = raw.rsplit(":", 1)
 		return host.strip(), int(port_s.strip())
 	return raw, default_port
+
+
+def _split_platform_identifier(raw: str, default_platform: str) -> tuple[str, str]:
+	raw = raw.strip()
+	if not raw:
+		raise ValueError("Empty identifier.")
+	if ":" in raw:
+		platform, identifier = raw.split(":", 1)
+		platform = platform.strip().lower()
+		identifier = identifier.strip()
+		if platform and identifier:
+			return platform, identifier
+	return default_platform.strip().lower() or "steam", raw
+
+
+async def _trn_get_profile(
+	*,
+	api_key: str,
+	game_slug: str,
+	platform: str,
+	identifier: str,
+) -> dict:
+	import aiohttp
+
+	url = (
+		f"https://public-api.tracker.gg/v2/{game_slug}/standard/profile/"
+		f"{platform}/{quote(identifier, safe='')}"
+	)
+	headers = {"TRN-Api-Key": api_key}
+
+	async with aiohttp.ClientSession() as session:
+		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+			data = await resp.json(content_type=None)
+			if resp.status >= 400:
+				raise RuntimeError(f"TRN HTTP {resp.status}: {data}")
+			return data
+
+
+def _trn_build_embed(*, title: str, payload: dict, profile_url: str) -> discord.Embed:
+	data = payload.get("data") or {}
+	platform_info = data.get("platformInfo") or {}
+	segments = data.get("segments") or []
+
+	player_name = platform_info.get("platformUserHandle") or platform_info.get("platformUserIdentifier") or "Unknown"
+	platform_name = platform_info.get("platformSlug") or platform_info.get("platformName") or ""
+
+	embed = discord.Embed(
+		title=title,
+		description=f"Profil: **{player_name}** {f'({platform_name})' if platform_name else ''}\n{profile_url}",
+		color=discord.Color.blurple(),
+	)
+
+	chosen = None
+	for seg in segments:
+		seg_type = (seg.get("type") or "").lower()
+		if seg_type in {"overview", "lifetime"}:
+			chosen = seg
+			break
+	if chosen is None and segments:
+		chosen = segments[0]
+
+	stats = (chosen or {}).get("stats") or {}
+	preferred = [
+		"rank",
+		"rating",
+		"mmr",
+		"tier",
+		"wins",
+		"losses",
+		"matchesPlayed",
+		"winPercentage",
+		"kd",
+		"kda",
+	]
+
+	added = 0
+	for key in preferred:
+		v = stats.get(key)
+		if not isinstance(v, dict):
+			continue
+		name = v.get("displayName") or key
+		value = v.get("displayValue") or v.get("value")
+		if value is None:
+			continue
+		embed.add_field(name=str(name), value=str(value), inline=True)
+		added += 1
+		if added >= 6:
+			break
+
+	if added == 0 and isinstance(stats, dict):
+		for k in list(stats.keys())[:6]:
+			v = stats.get(k)
+			if isinstance(v, dict):
+				name = v.get("displayName") or k
+				value = v.get("displayValue") or v.get("value")
+				if value is not None:
+					embed.add_field(name=str(name), value=str(value), inline=True)
+
+	return embed
 
 
 def format_dt(dt: Optional[datetime]) -> str:
@@ -266,15 +366,87 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			return
 
 		if game_key in {"smite2", "smite 2", "smite_2"}:
-			await ctx.send(
-				"Smite 2: il me faut la méthode/API que tu veux utiliser (officielle/tiers) + les clefs."
-			)
+			api_key = os.getenv("TRN_API_KEY", "").strip()
+			if not api_key:
+				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite2`.")
+				return
+			platform_default = os.getenv("TRN_SMITE2_PLATFORM", "steam").strip() or "steam"
+			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			try:
+				payload = await _trn_get_profile(
+					api_key=api_key,
+					game_slug="smite2",
+					platform=platform,
+					identifier=identifier,
+				)
+				embed = _trn_build_embed(
+					title="TRN — Smite 2",
+					payload=payload,
+					profile_url=f"https://tracker.gg/smite2/profile/{platform}/{quote(identifier, safe='')}"
+				)
+				await ctx.send(embed=embed)
+			except Exception as e:
+				print(f"TRN Smite2 error: {type(e).__name__}: {e}")
+				await ctx.send(
+					"Impossible de récupérer les stats Smite 2 (TRN). "
+					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo`)."
+				)
+			return
+
+		if game_key in {"smite1", "smite 1", "smite_1", "smite"}:
+			api_key = os.getenv("TRN_API_KEY", "").strip()
+			if not api_key:
+				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite1`.")
+				return
+			platform_default = os.getenv("TRN_SMITE1_PLATFORM", "steam").strip() or "steam"
+			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			try:
+				payload = await _trn_get_profile(
+					api_key=api_key,
+					game_slug="smite",
+					platform=platform,
+					identifier=identifier,
+				)
+				embed = _trn_build_embed(
+					title="TRN — Smite",
+					payload=payload,
+					profile_url=f"https://tracker.gg/smite/profile/{platform}/{quote(identifier, safe='')}"
+				)
+				await ctx.send(embed=embed)
+			except Exception as e:
+				print(f"TRN Smite error: {type(e).__name__}: {e}")
+				await ctx.send(
+					"Impossible de récupérer les stats Smite (TRN). "
+					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo`)."
+				)
 			return
 
 		if game_key in {"rocketleague", "rocket", "rl"}:
-			await ctx.send(
-				"Rocket League: pas d’API officielle simple. Si tu as un token Tracker Network (TRN) ou autre, je peux l’intégrer."
-			)
+			api_key = os.getenv("TRN_API_KEY", "").strip()
+			if not api_key:
+				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats rocketleague`.")
+				return
+			platform_default = os.getenv("TRN_RL_PLATFORM", "steam").strip() or "steam"
+			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			try:
+				payload = await _trn_get_profile(
+					api_key=api_key,
+					game_slug="rocket-league",
+					platform=platform,
+					identifier=identifier,
+				)
+				embed = _trn_build_embed(
+					title="TRN — Rocket League",
+					payload=payload,
+					profile_url=f"https://tracker.gg/rocket-league/profile/{platform}/{quote(identifier, safe='')}"
+				)
+				await ctx.send(embed=embed)
+			except Exception as e:
+				print(f"TRN RocketLeague error: {type(e).__name__}: {e}")
+				await ctx.send(
+					"Impossible de récupérer les stats Rocket League (TRN). "
+					"Vérifie `TRN_API_KEY` et le pseudo (tu peux faire `steam:Pseudo` ou `epic:Pseudo`)."
+				)
 			return
 
 		await ctx.send("Jeu non supporté pour l’instant. Priorités actuelles: smite2, minecraft, rocketleague.")
