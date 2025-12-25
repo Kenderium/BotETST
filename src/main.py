@@ -329,6 +329,8 @@ async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 				# RapidAPI error in payload
 				status_code = data.get("statusCode", 500)
 				raise RapidApiHttpError(status_code if isinstance(status_code, int) else 500, url, data)
+			return data
+		raise RuntimeError(f"RapidAPI returned non-object JSON for {url}: {type(data).__name__}")
 
 
 def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]:
@@ -910,7 +912,14 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						ttl_seconds=TTL_RL_SECONDS,
 						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
 					)
-				print(f"RapidAPI RL Shop payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
+					print(f"RapidAPI RL Shop payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
+					embed = discord.Embed(
+						title="Rocket League — Shop Featured",
+						color=discord.Color.blurple(),
+					)
+					# Try to extract shop items from payload
+					if isinstance(payload, dict):
+						items = payload.get("items") or payload.get("featured") or payload.get("data") or payload
 						if isinstance(items, list):
 							for i, item in enumerate(items[:15]):  # Limit to 15 items
 								if isinstance(item, dict):
@@ -920,11 +929,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 									value_text = f"Prix: {price}"
 									if rarity:
 										value_text += f" • {rarity}"
-									embed.add_field(
-										name=name,
-										value=value_text,
-										inline=True
-									)
+									embed.add_field(name=name, value=value_text, inline=True)
 						if len(embed.fields) == 0:
 							# Fallback: show raw data
 							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
