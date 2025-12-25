@@ -447,11 +447,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		embed.add_field(name=f"{p}hello", value="Dit bonjour.", inline=True)
 		embed.add_field(name=f"{p}users", value="Nombre de membres sur le serveur.", inline=True)
 		embed.add_field(name=f"{p}damn [@membre]", value="Damn quelqu'un (ou juste 'Damn.').", inline=True)
-		embed.add_field(name=f"{p}DJ", value="Citation DJ.", inline=True)
-		embed.add_field(name=f"{p}Nicoow", value="Citation Nicoow.", inline=True)
-		embed.add_field(name=f"{p}Lucas", value="Citation Lucas.", inline=True)
-		embed.add_field(name=f"{p}Grimdal", value="Invoque Grimdal.", inline=True)
-		embed.add_field(name=f"{p}Kenderium", value="Invoque Kenderium.", inline=True)
+		embed.add_field(name=f"{p}hi [XXX]", value="Invoque quelqu'un (DJ, Nicoow, Lucas, Grimdal, Kenderium, etc.) ou toi si rien n'est spécifié.", inline=True)
 		embed.add_field(
 			name=f"{p}id",
 			value=(
@@ -582,21 +578,23 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			return
 		await ctx.send(f"Damn {member.mention}.")
 
-	@bot.command(name="DJ")
-	async def dj(ctx: commands.Context) -> None:
-		await ctx.send("My vengance is going to be huge")
+	_callouts = {
+		"DJ": "My vengance is going to be huge",
+		"Nicoow": "My vengance is going to hurt you ☠",
+		"Lucas": "Lucas.",
+		"Grimdal": "Grimdal a été invoqué.",
+		"Kenderium": "Kenderium a été invoqué.",
+	}
 
-	def _simple_callout(name: str, default_text: str):
-		@bot.command(name=name)
-		async def _cmd(ctx: commands.Context) -> None:
-			await ctx.send(default_text)
-
-		return _cmd
-
-	_simple_callout("Nicoow", "My vengance is going to hurt you ☠")
-	_simple_callout("Lucas", "Lucas.")
-	_simple_callout("Grimdal", "Grimdal a été invoqué.")
-	_simple_callout("Kenderium", "Kenderium a été invoqué.")
+	@bot.command(name="hi")
+	async def hi(ctx: commands.Context, *, target: str = "") -> None:
+		target = target.strip() if target else ""
+		if not target:
+			target = ctx.author.name
+		if target in _callouts:
+			await ctx.send(_callouts[target])
+		else:
+			await ctx.send(f"Invoque {target}.")
 
 	def _get_mc_target() -> tuple[str, int]:
 		raw = os.getenv("MINECRAFT_SERVER", "").strip()
