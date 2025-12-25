@@ -82,9 +82,9 @@ Rocket League n’est pas forcément disponible via TRN selon ton plan/titres. L
 
 - `RAPIDAPI_KEY` (obligatoire)
 - `RL_RAPIDAPI_HOST` (obligatoire) — le host RapidAPI (ex: `xxxx.p.rapidapi.com`)
-- `RL_RAPIDAPI_URL_TEMPLATE` (obligatoire) — URL complète avec placeholders `{platform}` et `{identifier}`
+- `RL_RAPIDAPI_URL_TEMPLATE` (obligatoire) — URL complète ou path (commençant par `/`).
 	- Peut être une URL complète **ou** juste un path (commençant par `/`).
 	- Exemples (à adapter à l’API RapidAPI que tu as choisie):
-		- `https://xxxx.p.rapidapi.com/profile/{platform}/{identifier}`
-		- `/profile/{platform}/{identifier}`
-- `RL_PLATFORM` (optionnel, défaut: `steam`) — tu peux aussi faire `!stats rocketleague steam:7656119...`
+		- `/ranks/{identifier}`
+	- Pour `rocket-league1`, le paramètre `{identifier}` est l’**Epic Games account id** ou le **display name**.
+- `RL_PLATFORM` (optionnel) — conservé pour compatibilité de commande, mais `rocket-league1` ignore la plateforme.

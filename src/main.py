@@ -167,6 +167,7 @@ def _trn_build_embed(*, title: str, payload: dict, profile_url: str) -> discord.
 
 async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 	import aiohttp
+	import json
 
 	headers = {
 		"X-RapidAPI-Key": api_key,
@@ -174,10 +175,21 @@ async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 	}
 	async with aiohttp.ClientSession() as session:
 		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-			data = await resp.json(content_type=None)
+			# RapidAPI providers are not always consistent with content-types.
+			try:
+				data: object = await resp.json(content_type=None)
+			except Exception:
+				text = await resp.text()
+				try:
+					data = json.loads(text)
+				except Exception:
+					data = {"raw": text}
+
 			if resp.status >= 400:
-				raise RuntimeError(f"RapidAPI HTTP {resp.status}: {data}")
-			return data
+				raise RuntimeError(f"RapidAPI HTTP {resp.status} for {url}: {data}")
+			if isinstance(data, dict):
+				return data
+			raise RuntimeError(f"RapidAPI returned non-object JSON for {url}: {type(data).__name__}")
 
 
 def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]:
@@ -315,7 +327,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		)
 		embed.add_field(
 			name=f"{p}stats rocketleague <pseudo>",
-			value="Stats profil Rocket League (via TRN). Ex: `!stats rocketleague epic:Pseudo`",
+			value="Stats Rocket League (RapidAPI). Ex: `!stats rocketleague Kenderium` (Epic display name/id)",
 			inline=False,
 		)
 		embed.add_field(
@@ -565,14 +577,22 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			)
 
 			try:
+				print(f"RapidAPI RL GET {url}", flush=True)
 				payload = await _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host)
 				embed = discord.Embed(
 					title="Rocket League — RapidAPI",
-					description=f"Profil: `{platform}:{identifier}`",
+					description=f"Joueur: `{identifier}`",
 					color=discord.Color.blurple(),
 				)
+				if rapid_host == "rocket-league1.p.rapidapi.com" and platform not in {"epic", "egs"}:
+					embed.add_field(
+						name="Note",
+						value="Cette API attend un Epic account id ou display name (la plateforme `steam:` est ignorée).",
+						inline=False,
+					)
 				for k, v in _pick_scalar_stats(payload, limit=6):
-					embed.add_field(name=k, value=v, inline=True)
+					leaf = k.rsplit(".", 1)[-1]
+					embed.add_field(name=leaf, value=v, inline=True)
 				if len(embed.fields) == 0:
 					embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
 				print(f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
