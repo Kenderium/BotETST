@@ -188,7 +188,13 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		host, port = _get_ark_target_etst1()
 
 		def _probe() -> str:
-			info = a2s.info((host, port), timeout=3.0)
+			info_fn = getattr(a2s, "info", None)
+			if info_fn is None:
+				raise RuntimeError(
+					"A2S library mismatch: expected `a2s.info()` but it is missing. "
+					"Fix: `pip uninstall a2s` then `pip install -r requirements.txt` (installs `python-a2s`)."
+				)
+			info = info_fn((host, port), timeout=5.0)
 			online = getattr(info, "player_count", None)
 			max_p = getattr(info, "max_players", None)
 			map_name = getattr(info, "map_name", None)
