@@ -5,18 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/etst-bot
+WorkingDirectory=/home/jeux/BotDiscord/BotETST
 # Run as a dedicated, unprivileged user
-User=etst
-Group=etst
+User=jeux
+Group=jeux
 
-# Create a venv in /opt/etst-bot/.venv and install requirements
-ExecStart=/opt/etst-bot/.venv/bin/python -m src.main
+# Create a venv in /home/jeux/BotDiscord/BotETST/.venv and install requirements
+ExecStart=/home/jeux/BotDiscord/BotETST/.venv/bin/python -m src.main
 Restart=on-failure
 RestartSec=5
 
 # Recommended: store secrets in an EnvironmentFile
-EnvironmentFile=/opt/etst-bot/.env
+EnvironmentFile=/home/jeux/BotDiscord/BotETST/.env
 
 # Keep secrets readable only by the service user
 UMask=0077
@@ -25,8 +25,8 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/etst-bot
+ProtectHome=false
+ReadWritePaths=/home/jeux/BotDiscord/BotETST
 
 [Install]
 WantedBy=multi-user.target

@@ -39,6 +39,16 @@ def load_settings() -> Settings:
 	return Settings(token=token, prefix=prefix)
 
 
+def _split_host_port(raw: str, default_port: int) -> tuple[str, int]:
+	raw = raw.strip()
+	if not raw:
+		raise ValueError("Empty host.")
+	if ":" in raw:
+		host, port_s = raw.rsplit(":", 1)
+		return host.strip(), int(port_s.strip())
+	return raw, default_port
+
+
 def format_dt(dt: Optional[datetime]) -> str:
 	if not dt:
 		return "N/A"
@@ -83,16 +93,43 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	@bot.command(name="help")
 	async def help_cmd(ctx: commands.Context) -> None:
 		embed = discord.Embed(
-			title="Help on BOT",
-			description="Some useful commands",
+			title="Aide — Bot Eternal Storm",
+			description=(
+				"Commandes disponibles (préfixe: "
+				f"`{settings.prefix}`)"
+			),
 			color=discord.Color.blurple(),
 		)
-		embed.add_field(name="!hello", value="Greets the user", inline=True)
-		embed.add_field(name="!users", value="Prints number of users", inline=True)
-		embed.add_field(name="!damn", value="You can damn people", inline=True)
-		embed.add_field(name="!DJ", value="My vengance is going to be huge", inline=True)
-		embed.add_field(name="!Nicoow", value="My vengance is going to hurt you ☠", inline=True)
-		embed.add_field(name="!Lucas", value="Lucas.", inline=True)
+		p = settings.prefix
+		embed.add_field(name=f"{p}hello", value="Dit bonjour.", inline=True)
+		embed.add_field(name=f"{p}users", value="Nombre de membres sur le serveur.", inline=True)
+		embed.add_field(name=f"{p}damn [@membre]", value="Damn quelqu'un (ou juste 'Damn.').", inline=True)
+		embed.add_field(name=f"{p}DJ", value="Citation DJ.", inline=True)
+		embed.add_field(name=f"{p}Nicoow", value="Citation Nicoow.", inline=True)
+		embed.add_field(name=f"{p}Lucas", value="Citation Lucas.", inline=True)
+		embed.add_field(name=f"{p}Grimdal", value="Invoque Grimdal.", inline=True)
+		embed.add_field(name=f"{p}Kenderium", value="Invoque Kenderium.", inline=True)
+		embed.add_field(
+			name=f"{p}stats minecraft",
+			value="Status du serveur Minecraft (joueurs en ligne).",
+			inline=False,
+		)
+		embed.add_field(
+			name=f"{p}stats ark",
+			value="Joueurs en ligne sur le serveur ARK ETST1 (Fjordur / VAC).",
+			inline=False,
+		)
+		embed.add_field(
+			name=f"{p}stats smite2 <pseudo>",
+			value="(À brancher) Stats Smite 2.",
+			inline=False,
+		)
+		embed.add_field(
+			name=f"{p}stats rocketleague <pseudo>",
+			value="(À brancher) Stats Rocket League.",
+			inline=False,
+		)
+		embed.set_footer(text="Eternal Storm — Smite, Overwatch 2, Rocket League, Ark, Minecraft, Fortnite, etc.")
 		await ctx.send(embed=embed)
 
 	@bot.command(name="hello")
@@ -133,10 +170,38 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		raw = os.getenv("MINECRAFT_SERVER", "").strip()
 		if not raw:
 			raise RuntimeError("MINECRAFT_SERVER is missing (example: play.example.com:25565)")
-		if ":" in raw:
-			host, port_s = raw.rsplit(":", 1)
-			return host.strip(), int(port_s.strip())
-		return raw, 25565
+		return _split_host_port(raw, 25565)
+
+	def _get_ark_target_etst1() -> tuple[str, int]:
+		raw = os.getenv("ARK_ETST1_SERVER", "").strip()
+		if not raw:
+			raise RuntimeError(
+				"ARK_ETST1_SERVER is missing (example: etst.duckdns.org:27015). "
+				"Note: this should be the Steam query port (A2S)."
+			)
+		return _split_host_port(raw, 27015)
+
+	async def _ark_status_text_etst1() -> str:
+		import asyncio
+		import a2s  # type: ignore
+
+		host, port = _get_ark_target_etst1()
+
+		def _probe() -> str:
+			info = a2s.info((host, port), timeout=3.0)
+			online = getattr(info, "player_count", None)
+			max_p = getattr(info, "max_players", None)
+			map_name = getattr(info, "map_name", None)
+			vac = getattr(info, "vac", False)
+			name = getattr(info, "server_name", None) or "ETST1"
+
+			online_s = str(online) if online is not None else "?"
+			max_s = str(max_p) if max_p is not None else "?"
+			map_s = f" — map `{map_name}`" if map_name else ""
+			vac_s = "VAC ON" if vac else "VAC OFF"
+			return f"ARK `{name}`: {online_s}/{max_s} joueurs{map_s} — {vac_s}"
+
+		return await asyncio.to_thread(_probe)
 
 	async def _mc_status_text() -> str:
 		from mcstatus import JavaServer  # type: ignore
@@ -159,8 +224,9 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	async def stats(ctx: commands.Context, game: Optional[str] = None, *, pseudo: str = "") -> None:
 		if not game:
 			await ctx.send(
-				"Usage: `!stats <jeu> <pseudo>`\n"
-				"Exemples: `!stats smite2 MonPseudo`, `!stats rocketleague MonPseudo`, `!stats minecraft`"
+				f"Usage: `{settings.prefix}stats <jeu> [pseudo]`\n"
+				f"Exemples: `{settings.prefix}stats minecraft`, `{settings.prefix}stats ark`, "
+				f"`{settings.prefix}stats smite2 MonPseudo`, `{settings.prefix}stats rocketleague MonPseudo`"
 			)
 			return
 
@@ -178,8 +244,19 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				print(f"Minecraft status error: {type(e).__name__}: {e}")
 			return
 
+		if game_key in {"ark"}:
+			try:
+				await ctx.send(await _ark_status_text_etst1())
+			except Exception as e:
+				await ctx.send(
+					"Impossible de récupérer le status ARK. "
+					"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
+				)
+				print(f"ARK status error: {type(e).__name__}: {e}")
+			return
+
 		if not pseudo.strip():
-			await ctx.send("Usage: `!stats <jeu> <pseudo>`")
+			await ctx.send(f"Usage: `{settings.prefix}stats <jeu> <pseudo>`")
 			return
 
 		if game_key in {"smite2", "smite 2", "smite_2"}:

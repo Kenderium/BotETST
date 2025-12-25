@@ -28,19 +28,19 @@ python -m venv .venv
 
 Le template du service est dans [systemd/etstBotDiscord.service](systemd/etstBotDiscord.service).
 
-Exemple d’installation dans `/opt/etst-bot`:
+Exemple d’installation dans `/home/jeux/BotDiscord/BotETST` (adapte les chemins/utilisateur si besoin):
 
 ```bash
-sudo mkdir -p /opt/etst-bot
-sudo rsync -a --delete ./ /opt/etst-bot/
-cd /opt/etst-bot
+sudo mkdir -p /home/jeux/BotDiscord/BotETST
+sudo rsync -a --delete ./ /home/jeux/BotDiscord/BotETST/
+cd /home/jeux/BotDiscord/BotETST
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# Crée /opt/etst-bot/.env (copie depuis .env.example puis mets DISCORD_TOKEN)
-sudo cp .env.example .env
-sudo nano .env
+# Crée /home/jeux/BotDiscord/BotETST/.env (copie depuis .env.example puis mets DISCORD_TOKEN)
+cp .env.example .env
+nano .env
 
 sudo cp systemd/etstBotDiscord.service /etc/systemd/system/etstBotDiscord.service
 sudo systemctl daemon-reload
@@ -58,5 +58,12 @@ journalctl -u etstBotDiscord -f
 - `!DJ`
 - `!Nicoow`, `!Lucas`, `!Grimdal`, `!Kenderium`
 - `!stats minecraft` (status serveur + joueurs en ligne)
+- `!stats ark` (joueurs en ligne sur le serveur ARK ETST1)
 - `!stats smite2 <pseudo>` (à brancher)
 - `!stats rocketleague <pseudo>` (à brancher)
+
+## Variables d’environnement
+
+- `DISCORD_TOKEN` (obligatoire)
+- `MINECRAFT_SERVER` (ex: `play.example.com:25565`)
+- `ARK_ETST1_SERVER` (port query Steam/A2S, ex: `etst.duckdns.org:27015`)
