@@ -165,6 +165,79 @@ def _trn_build_embed(*, title: str, payload: dict, profile_url: str) -> discord.
 	return embed
 
 
+async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
+	import aiohttp
+
+	headers = {
+		"X-RapidAPI-Key": api_key,
+		"X-RapidAPI-Host": api_host,
+	}
+	async with aiohttp.ClientSession() as session:
+		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+			data = await resp.json(content_type=None)
+			if resp.status >= 400:
+				raise RuntimeError(f"RapidAPI HTTP {resp.status}: {data}")
+			return data
+
+
+def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]:
+	# Very generic extractor for unknown API shapes.
+	interesting = {
+		"rank",
+		"mmr",
+		"rating",
+		"wins",
+		"losses",
+		"matches",
+		"match",
+		"win",
+		"loss",
+		"goal",
+		"goals",
+		"assist",
+		"assists",
+		"save",
+		"saves",
+		"shot",
+		"shots",
+		"mvps",
+		"mvp",
+	}
+
+	items: list[tuple[str, str]] = []
+
+	def walk(obj: object, prefix: str = "", depth: int = 0) -> None:
+		nonlocal items
+		if len(items) >= limit or depth > 4:
+			return
+		if isinstance(obj, dict):
+			for k, v in obj.items():
+				key = str(k)
+				path = f"{prefix}.{key}" if prefix else key
+				walk(v, path, depth + 1)
+				if len(items) >= limit:
+					return
+			return
+		if isinstance(obj, list):
+			for i, v in enumerate(obj[:10]):
+				walk(v, f"{prefix}[{i}]" if prefix else f"[{i}]", depth + 1)
+				if len(items) >= limit:
+					return
+			return
+
+		# Scalars
+		if isinstance(obj, (str, int, float, bool)) and prefix:
+			leaf = prefix.rsplit(".", 1)[-1].lower()
+			if any(token in leaf for token in interesting):
+				val = str(obj)
+				if isinstance(obj, str) and len(val) > 120:
+					return
+				items.append((prefix, val))
+
+	walk(payload)
+	return items
+
+
 def format_dt(dt: Optional[datetime]) -> str:
 	if not dt:
 		return "N/A"
@@ -189,7 +262,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	async def on_ready() -> None:
 		if bot.user is None:
 			return
-		print(f"ETST connected as {bot.user} (id={bot.user.id})")
+		print(f"ETST connected as {bot.user} (id={bot.user.id})", flush=True)
 
 	@bot.event
 	async def on_command_error(ctx: commands.Context, error: Exception) -> None:
@@ -203,7 +276,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			return
 
 		# Log unexpected errors server-side.
-		print(f"Command error: {type(error).__name__}: {error}")
+		print(f"Command error: {type(error).__name__}: {error}", flush=True)
 		await ctx.send("Oups, une erreur est survenue côté bot.")
 
 	@bot.command(name="help")
@@ -369,6 +442,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Attention: `8123` est fréquemment le port Dynmap (web), pas le port Minecraft."
 				)
 				print(f"Minecraft status error: {type(e).__name__}: {e}")
+				print(f"Minecraft status error: {type(e).__name__}: {e}", flush=True)
 			return
 
 		if game_key in {"ark"}:
@@ -379,7 +453,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Impossible de récupérer le status ARK. "
 					"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
 				)
-				print(f"ARK status error: {type(e).__name__}: {e}")
+				print(f"ARK status error: {type(e).__name__}: {e}", flush=True)
 			return
 
 		if not pseudo.strip():
@@ -412,7 +486,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				)
 				await ctx.send(embed=embed)
 			except TrnHttpError as e:
-				print(f"TRN Smite2 HTTP {e.status}: {e.payload}")
+				print(f"TRN Smite2 HTTP {e.status}: {e.payload}", flush=True)
 				if e.status in {401, 403}:
 					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
 				elif e.status == 404:
@@ -422,7 +496,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				else:
 					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
-				print(f"TRN Smite2 error: {type(e).__name__}: {e}")
+				print(f"TRN Smite2 error: {type(e).__name__}: {e}", flush=True)
 				await ctx.send("Impossible de récupérer les stats Smite 2 (TRN). Check les logs du bot.")
 			return
 
@@ -452,7 +526,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				)
 				await ctx.send(embed=embed)
 			except TrnHttpError as e:
-				print(f"TRN Smite HTTP {e.status}: {e.payload}")
+				print(f"TRN Smite HTTP {e.status}: {e.payload}", flush=True)
 				if e.status in {401, 403}:
 					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
 				elif e.status == 404:
@@ -462,55 +536,53 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				else:
 					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
-				print(f"TRN Smite error: {type(e).__name__}: {e}")
+				print(f"TRN Smite error: {type(e).__name__}: {e}", flush=True)
 				await ctx.send("Impossible de récupérer les stats Smite (TRN). Check les logs du bot.")
 			return
 
 		if game_key in {"rocketleague", "rocket", "rl"}:
-			api_key = os.getenv("TRN_API_KEY", "").strip()
-			if not api_key:
-				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats rocketleague`.")
-				return
-			if not _looks_like_trn_app_id(api_key):
+			rapid_key = os.getenv("RAPIDAPI_KEY", "").strip()
+			rapid_host = os.getenv("RL_RAPIDAPI_HOST", "").strip()
+			url_tmpl = os.getenv("RL_RAPIDAPI_URL_TEMPLATE", "").strip()
+			if not rapid_key or not rapid_host or not url_tmpl:
 				await ctx.send(
-					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
-					"Dans la doc TRN, la valeur attendue est l’App ID."
+					"Rocket League est configuré via RapidAPI. Il manque une variable d’env: "
+					"`RAPIDAPI_KEY`, `RL_RAPIDAPI_HOST` ou `RL_RAPIDAPI_URL_TEMPLATE`. "
+					"Voir README/.env.example."
 				)
-			platform_default = os.getenv("TRN_RL_PLATFORM", "steam").strip() or "steam"
+				return
+
+			platform_default = os.getenv("RL_PLATFORM", "steam").strip() or "steam"
 			platform, identifier = _split_platform_identifier(pseudo, platform_default)
+			url_path_or_full = url_tmpl.format(
+				platform=quote(platform, safe=""),
+				identifier=quote(identifier, safe=""),
+			)
+			url = (
+				f"https://{rapid_host}{url_path_or_full}"
+				if url_path_or_full.startswith("/")
+				else url_path_or_full
+			)
+
 			try:
-				payload = await _trn_get_profile(
-					api_key=api_key,
-					game_slug="rocket-league",
-					platform=platform,
-					identifier=identifier,
+				payload = await _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host)
+				embed = discord.Embed(
+					title="Rocket League — RapidAPI",
+					description=f"Profil: `{platform}:{identifier}`",
+					color=discord.Color.blurple(),
 				)
-				embed = _trn_build_embed(
-					title="TRN — Rocket League",
-					payload=payload,
-					profile_url=f"https://tracker.gg/rocket-league/profile/{platform}/{quote(identifier, safe='')}"
-				)
+				for k, v in _pick_scalar_stats(payload, limit=6):
+					embed.add_field(name=k, value=v, inline=True)
+				if len(embed.fields) == 0:
+					embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
+				print(f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
 				await ctx.send(embed=embed)
-			except TrnHttpError as e:
-				print(f"TRN RocketLeague HTTP {e.status}: {e.payload}")
-				if e.status in {401, 403}:
-					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
-				elif e.status == 404:
-					# RL est fréquemment pénible côté Steam: parfois il faut le SteamID64, pas le pseudo.
-					if platform == "steam" and not identifier.isdigit():
-						await ctx.send(
-							"Profil introuvable sur TRN pour `steam`. Sur Rocket League, TRN peut nécessiter le **SteamID64** "
-							"au lieu d’un pseudo. Essaie aussi `epic:Pseudo` si c’est ton compte principal."
-						)
-					else:
-						await ctx.send("Profil introuvable sur TRN. Vérifie la plateforme (`steam:`/`epic:`/`psn:`/`xbl:`) et l’identifiant.")
-				elif e.status == 429:
-					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
 			except Exception as e:
-				print(f"TRN RocketLeague error: {type(e).__name__}: {e}")
-				await ctx.send("Impossible de récupérer les stats Rocket League (TRN). Check les logs du bot.")
+				print(f"RapidAPI RocketLeague error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send(
+					"Impossible de récupérer les stats Rocket League (RapidAPI). "
+					"Vérifie `RAPIDAPI_KEY`, `RL_RAPIDAPI_HOST`, `RL_RAPIDAPI_URL_TEMPLATE` et l’identifiant."
+				)
 			return
 
 		await ctx.send("Jeu non supporté pour l’instant. Priorités actuelles: smite2, minecraft, rocketleague.")

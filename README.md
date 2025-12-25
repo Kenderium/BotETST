@@ -72,7 +72,19 @@ journalctl -u etstBotDiscord -f
 
 Le bot peut interroger l’API publique TRN (tracker.gg) pour récupérer des stats profils.
 
-- `TRN_API_KEY` (obligatoire pour `!stats smite1|smite2|rocketleague`)
-- `TRN_RL_PLATFORM` (optionnel, défaut: `steam`) — tu peux aussi faire `!stats rocketleague steam:MonPseudo`
+- `TRN_API_KEY` (optionnel) — utilisé si tu branches Smite via TRN.
 - `TRN_SMITE1_PLATFORM` (optionnel, défaut: `steam`) — ex: `!stats smite1 steam:MonPseudo`
 - `TRN_SMITE2_PLATFORM` (optionnel, défaut: `steam`) — ex: `!stats smite2 steam:MonPseudo`
+
+### Rocket League (RapidAPI)
+
+Rocket League n’est pas forcément disponible via TRN selon ton plan/titres. Le bot peut utiliser une API Rocket League via RapidAPI.
+
+- `RAPIDAPI_KEY` (obligatoire)
+- `RL_RAPIDAPI_HOST` (obligatoire) — le host RapidAPI (ex: `xxxx.p.rapidapi.com`)
+- `RL_RAPIDAPI_URL_TEMPLATE` (obligatoire) — URL complète avec placeholders `{platform}` et `{identifier}`
+	- Peut être une URL complète **ou** juste un path (commençant par `/`).
+	- Exemples (à adapter à l’API RapidAPI que tu as choisie):
+		- `https://xxxx.p.rapidapi.com/profile/{platform}/{identifier}`
+		- `/profile/{platform}/{identifier}`
+- `RL_PLATFORM` (optionnel, défaut: `steam`) — tu peux aussi faire `!stats rocketleague steam:7656119...`
