@@ -200,6 +200,7 @@ class _TtlCache:
 
 		cached = self.get(key)
 		if cached is not None:
+			print(f"[Cache HIT] {key}", flush=True)
 			return cached
 
 		lock = self._locks.get(key)
@@ -210,7 +211,9 @@ class _TtlCache:
 		async with lock:
 			cached2 = self.get(key)
 			if cached2 is not None:
+				print(f"[Cache HIT] {key}", flush=True)
 				return cached2
+			print(f"[Cache MISS] {key} - calling API", flush=True)
 			value = await factory()
 			self.set(key, value, ttl_seconds)
 			return value
@@ -303,6 +306,7 @@ class _PersistentTtlCache:
 
 		cached = self.get(key)
 		if cached is not None:
+			print(f"[Cache HIT] {key}", flush=True)
 			return cached
 
 		lock = self._locks.get(key)
@@ -313,7 +317,9 @@ class _PersistentTtlCache:
 		async with lock:
 			cached2 = self.get(key)
 			if cached2 is not None:
+				print(f"[Cache HIT] {key}", flush=True)
 				return cached2
+			print(f"[Cache MISS] {key} - calling API", flush=True)
 			value = await factory()
 			self.set(key, value, ttl_seconds)
 			return value
