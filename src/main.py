@@ -355,11 +355,19 @@ def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]
 		"shots",
 		"mvps",
 		"mvp",
+		# Extra tokens commonly found in Rocket League APIs
+		"tier",
+		"division",
+		"playlist",
+		"league",
+		"season",
+		"rankpoints",
+		"rank_points",
 	}
 
 	items: list[tuple[str, str]] = []
 
-	def walk(obj: object, prefix: str = "", depth: int = 0) -> None:
+	def walk(obj: object, prefix: str = "", depth: int = 0, only_interesting: bool = True) -> None:
 		nonlocal items
 		if len(items) >= limit or depth > 4:
 			return
@@ -367,13 +375,13 @@ def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]
 			for k, v in obj.items():
 				key = str(k)
 				path = f"{prefix}.{key}" if prefix else key
-				walk(v, path, depth + 1)
+				walk(v, path, depth + 1, only_interesting)
 				if len(items) >= limit:
 					return
 			return
 		if isinstance(obj, list):
 			for i, v in enumerate(obj[:10]):
-				walk(v, f"{prefix}[{i}]" if prefix else f"[{i}]", depth + 1)
+				walk(v, f"{prefix}[{i}]" if prefix else f"[{i}]", depth + 1, only_interesting)
 				if len(items) >= limit:
 					return
 			return
@@ -381,13 +389,17 @@ def _pick_scalar_stats(payload: object, limit: int = 6) -> list[tuple[str, str]]
 		# Scalars
 		if isinstance(obj, (str, int, float, bool)) and prefix:
 			leaf = prefix.rsplit(".", 1)[-1].lower()
-			if any(token in leaf for token in interesting):
+			if (not only_interesting) or any(token in leaf for token in interesting):
 				val = str(obj)
 				if isinstance(obj, str) and len(val) > 120:
 					return
 				items.append((prefix, val))
 
-	walk(payload)
+	# First pass: collect only interesting tokens
+	walk(payload, "", 0, True)
+	# Fallback: if nothing matched, collect any scalar leaves
+	if len(items) == 0:
+		walk(payload, "", 0, False)
 	return items
 
 
