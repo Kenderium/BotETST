@@ -1,4 +1,5 @@
 
+import asyncio
 import json
 import os
 import random
@@ -193,6 +194,109 @@ class _TtlCache:
 
 	def set(self, key: str, value: object, ttl_seconds: float) -> None:
 		self._store[key] = (time.monotonic() + ttl_seconds, value)
+
+	async def get_or_set(self, *, key: str, ttl_seconds: float, factory):
+		import asyncio
+
+		cached = self.get(key)
+		if cached is not None:
+			return cached
+
+		lock = self._locks.get(key)
+		if lock is None:
+			lock = asyncio.Lock()
+			self._locks[key] = lock
+
+		async with lock:
+			cached2 = self.get(key)
+			if cached2 is not None:
+				return cached2
+			value = await factory()
+			self.set(key, value, ttl_seconds)
+			return value
+
+
+class _PersistentTtlCache:
+	"""A TTL cache persisted to a JSON file so values survive restarts.
+
+	Stores expiration using wall-clock seconds (`time.time()`), not monotonic,
+	to be compatible across process lifetimes.
+	"""
+	def __init__(self, file_path: str) -> None:
+		self._file_path = file_path
+		self._lock = None
+		# In-memory store: key -> (expires_at_epoch_seconds, value)
+		self._store: dict[str, tuple[float, object]] | None = None
+		self._locks: dict[str, "asyncio.Lock"] = {}
+
+	async def _get_lock(self):
+		import asyncio
+
+		if self._lock is None:
+			self._lock = asyncio.Lock()
+		return self._lock
+
+	def _ensure_loaded(self) -> dict[str, tuple[float, object]]:
+		if self._store is not None:
+			return self._store
+		try:
+			with open(self._file_path, "r", encoding="utf-8") as f:
+				obj = json.load(f)
+			if isinstance(obj, dict):
+				store: dict[str, tuple[float, object]] = {}
+				now = time.time()
+				for k, v in obj.items():
+					if not isinstance(k, str) or not isinstance(v, dict):
+						continue
+					exp = v.get("expires_at")
+					val = v.get("value")
+					if isinstance(exp, (int, float)):
+						if exp > now:
+							store[k] = (float(exp), val)
+				self._store = store
+			else:
+				self._store = {}
+		except FileNotFoundError:
+			self._store = {}
+		except Exception:
+			# Corrupt file: start fresh (and keep the old file as-is).
+			self._store = {}
+		return self._store
+
+	def _atomic_save(self, data: dict[str, tuple[float, object]]) -> None:
+		os.makedirs(os.path.dirname(self._file_path), exist_ok=True)
+		tmp = f"{self._file_path}.tmp"
+		serializable: dict[str, dict[str, object]] = {
+			k: {"expires_at": exp, "value": val} for k, (exp, val) in data.items()
+		}
+		with open(tmp, "w", encoding="utf-8") as f:
+			json.dump(serializable, f, ensure_ascii=False, indent=2)
+		os.replace(tmp, self._file_path)
+
+	def get(self, key: str) -> object | None:
+		now = time.time()
+		data = self._ensure_loaded()
+		item = data.get(key)
+		if item is None:
+			return None
+		expires_at, value = item
+		if expires_at <= now:
+			# Expired: drop and persist
+			data.pop(key, None)
+			try:
+				self._atomic_save(data)
+			except Exception:
+				pass
+			return None
+		return value
+
+	def set(self, key: str, value: object, ttl_seconds: float) -> None:
+		data = self._ensure_loaded()
+		data[key] = (time.time() + float(ttl_seconds), value)
+		try:
+			self._atomic_save(data)
+		except Exception:
+			pass
 
 	async def get_or_set(self, *, key: str, ttl_seconds: float, factory):
 		import asyncio
@@ -426,7 +530,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		help_command=None,
 	)
 
-	api_cache = _TtlCache()
+	# Persist API cache to disk so it survives restarts
+	api_cache_path = os.path.join(os.getcwd(), "data", "api_cache.json")
+	os.makedirs(os.path.dirname(api_cache_path), exist_ok=True)
+	api_cache = _PersistentTtlCache(api_cache_path)
 	TTL_MINECRAFT_SECONDS = 30.0
 	TTL_ARK_SECONDS = 30.0
 	TTL_TRN_SECONDS = 120.0
@@ -883,23 +990,35 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						color=discord.Color.blurple(),
 					)
 					
-					# Try to extract tournament info from payload
+					# Parse tournaments array
 					if isinstance(payload, dict):
-						# The API might return tournaments as a list or nested object
-						tournaments = payload.get("tournaments") or payload.get("data") or payload
-						if isinstance(tournaments, list):
-							for i, tournament in enumerate(tournaments[:10]):  # Limit to 10 tournaments
+						tournaments = payload.get("tournaments", [])
+						if isinstance(tournaments, list) and len(tournaments) > 0:
+							for i, tournament in enumerate(tournaments[:12]):  # Show up to 12 tournaments
 								if isinstance(tournament, dict):
-									name = tournament.get("name") or tournament.get("title") or f"Tournoi {i+1}"
-									date = tournament.get("date") or tournament.get("start_date") or "Date inconnue"
-									region = tournament.get("region") or "Europe"
+									# Parse fields: players, starts (ISO timestamp), mode
+									players = tournament.get("players", "?")
+									starts_iso = tournament.get("starts", "")
+									mode = tournament.get("mode", "Standard")
+									
+									# Format the start time from ISO timestamp
+									try:
+										dt = datetime.fromisoformat(starts_iso.replace("Z", "+00:00"))
+										# Show date and time in a readable format
+										date_str = dt.strftime("%d/%m/%Y %H:%M UTC")
+									except Exception:
+										date_str = starts_iso or "Date inconnue"
+									
 									embed.add_field(
-										name=f"{name}",
-										value=f"Date: {date}\nRégion: {region}",
-										inline=False
+										name=f"🏆 Tournoi {i+1}",
+										value=f"**Mode:** {mode}\n**Joueurs:** {players}v{players}\n**Début:** {date_str}",
+										inline=True
 									)
+						else:
+							embed.description = "Aucun tournoi disponible."
+						
 						if len(embed.fields) == 0:
-							# Fallback: show raw data keys
+							# Fallback: show raw data
 							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
 							for k, v in _pick_scalar_stats(payload, limit=10):
 								leaf = k.rsplit(".", 1)[-1]
