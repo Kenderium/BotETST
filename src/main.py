@@ -415,7 +415,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	TTL_MINECRAFT_SECONDS = 30.0
 	TTL_ARK_SECONDS = 30.0
 	TTL_TRN_SECONDS = 120.0
-	TTL_RL_SECONDS = 120.0
+	TTL_RL_SECONDS = 86400.0  # 24 hours for RapidAPI caching
 
 	user_ids_path = os.path.join(os.getcwd(), "data", "user_ids.json")
 	user_ids = _UserIdStore(user_ids_path)
@@ -892,8 +892,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
 					elif e.status == 404:
 						await ctx.send("Endpoint tournaments introuvable (404).")
-					elif e.status == 429:
-						await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+					elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+						await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
 					else:
 						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
 				except Exception as e:
@@ -944,8 +944,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
 					elif e.status == 404:
 						await ctx.send("Endpoint shop introuvable (404).")
-					elif e.status == 429:
-						await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+					elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+						await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
+					elif e.status == 500:
+						await ctx.send("Erreur serveur RapidAPI (500). L'API du shop peut être temporairement indisponible.")
 					else:
 						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
 				except Exception as e:
@@ -1021,8 +1023,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					await ctx.send(
 						"Endpoint introuvable (404). Vérifie `RL_RAPIDAPI_URL_TEMPLATE` (pour rocket-league1: `/ranks/{identifier}`)."
 					)
-				elif e.status == 429:
-					await ctx.send("Rate limit RapidAPI (429). Réessaye dans quelques secondes.")
+				elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+					await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les stats sont en cache 24h si déjà demandées.)")
 				else:
 					await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
 			except Exception as e:
