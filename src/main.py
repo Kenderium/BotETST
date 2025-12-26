@@ -496,7 +496,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		)
 		embed.add_field(
 			name=f"{p}stats rocketleague <pseudo>",
-			value="Stats Rocket League (RapidAPI). Ex: `!stats rocketleague Kenderium` (Epic display name/id)",
+			value=(
+				"Stats Rocket League (RapidAPI). Exemples:\n"
+				f"• `{settings.prefix}stats rocketleague epic:TonPseudo`\n"
+				f"• `{settings.prefix}stats rocketleague TonDisplayNameEpic`"
+			),
 			inline=False,
 		)
 		embed.add_field(
@@ -520,7 +524,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				"Tu peux enregistrer tes pseudos une fois pour toutes :\n"
 				"• `!id steam <ton_steam>`\n"
 				"• `!id epic <ton_epic>`\n"
-				"Puis utiliser `!stats smite1` / `!stats smite2` / `!stats rocketleague` sans préciser le pseudo."
+				"Puis utiliser `!stats smite1` / `!stats smite2` / `!stats rocketleague` sans préciser le pseudo.\n"
+				"Pour Rocket League (rocket-league1), préfère `epic:<ton_pseudo>` (la plateforme `steam:` est ignorée)."
 			),
 			inline=False,
 		)
@@ -991,10 +996,15 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					)
 					return
 			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
+			# Normalize identifier case for providers that expect lowercase display names
+			identifier_norm = identifier.strip()
+			if rapid_host == "rocket-league1.p.rapidapi.com":
+				identifier_norm = identifier_norm.lower()
+
 			url_path_or_full = url_tmpl.format(
 				platform=quote(platform, safe=""),
-				identifier=quote(identifier, safe=""),
-				player=quote(identifier, safe=""),
+				identifier=quote(identifier_norm, safe=""),
+				player=quote(identifier_norm, safe=""),
 			)
 			url = (
 				f"https://{rapid_host}{url_path_or_full}"
@@ -1012,13 +1022,16 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				)
 				embed = discord.Embed(
 					title="Rocket League — RapidAPI",
-					description=f"Joueur: `{identifier}`",
+					description=f"Joueur: `{identifier_norm}`",
 					color=discord.Color.blurple(),
 				)
 				if rapid_host == "rocket-league1.p.rapidapi.com" and platform not in {"epic", "egs"}:
 					embed.add_field(
 						name="Note",
-						value="Cette API attend un Epic account id ou display name (la plateforme `steam:` est ignorée).",
+						value=(
+							"Cette API attend un Epic account id ou display name. "
+							"La plateforme `steam:` est ignorée. Astuce: utilise `epic:<ton_pseudo>`"
+						),
 						inline=False,
 					)
 				# Prefer Rocket League-specific parsing when available
@@ -1070,6 +1083,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					)
 				elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
 					await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les stats sont en cache 24h si déjà demandées.)")
+				elif e.status == 502 and isinstance(e.payload, dict) and "empty json" in str(e.payload.get("message", "")).lower():
+					await ctx.send("Joueur introuvable sur l’API Rocket League (RapidAPI). Vérifie le display name/id Epic ou essaye une autre graphie.")
 				else:
 					await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
 			except Exception as e:
