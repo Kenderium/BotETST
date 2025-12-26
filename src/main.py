@@ -329,6 +329,9 @@ async def _rapidapi_get_json(*, url: str, api_key: str, api_host: str) -> dict:
 				# RapidAPI error in payload
 				status_code = data.get("statusCode", 500)
 				raise RapidApiHttpError(status_code if isinstance(status_code, int) else 500, url, data)
+			# Avoid returning and caching empty objects
+			if not data:
+				raise RapidApiHttpError(502, url, {"message": "Empty JSON object"})
 			return data
 		raise RuntimeError(f"RapidAPI returned non-object JSON for {url}: {type(data).__name__}")
 
@@ -1018,11 +1021,41 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						value="Cette API attend un Epic account id ou display name (la plateforme `steam:` est ignorée).",
 						inline=False,
 					)
-				for k, v in _pick_scalar_stats(payload, limit=6):
-					leaf = k.rsplit(".", 1)[-1]
-					embed.add_field(name=leaf, value=v, inline=True)
-				if len(embed.fields) == 0:
-					embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
+				# Prefer Rocket League-specific parsing when available
+				parsed = False
+				if isinstance(payload, dict):
+					ranks = payload.get("ranks")
+					if isinstance(ranks, list) and ranks:
+						for item in ranks[:6]:
+							if isinstance(item, dict):
+								playlist = item.get("playlist") or "Unknown"
+								rank_name = item.get("rank") or "?"
+								division = item.get("division")
+								mmr = item.get("mmr")
+								streak = item.get("streak")
+								value_text = f"{rank_name}"
+								if division is not None:
+									value_text += f" • Div {division}"
+								if mmr is not None:
+									value_text += f" • MMR {mmr}"
+								if streak is not None:
+									value_text += f" • Streak {streak}"
+								embed.add_field(name=str(playlist), value=value_text, inline=True)
+						parsed = parsed or (len(embed.fields) > 0)
+					reward = payload.get("reward")
+					if isinstance(reward, dict):
+						level = reward.get("level")
+						progress = reward.get("progress")
+						embed.add_field(name="Reward", value=f"Level: {level or '?'} • Progress: {progress if progress is not None else '?'}", inline=False)
+						parsed = True
+
+				# Fallback: generic scalar stats when format is unknown
+				if not parsed:
+					for k, v in _pick_scalar_stats(payload, limit=6):
+						leaf = k.rsplit(".", 1)[-1]
+						embed.add_field(name=leaf, value=v, inline=True)
+					if len(embed.fields) == 0:
+						embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
 				print(f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
 				await ctx.send(embed=embed)
 			except RapidApiHttpError as e:
