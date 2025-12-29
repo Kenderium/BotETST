@@ -761,7 +761,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		ctx: commands.Context,
 		player: discord.Member,
 		opponent: discord.Member,
-		timeout_seconds: float = 30.0,
+		timeout_seconds: float = 15.0,
 	) -> str:
 		"""Ask `player` in DM to pick, using reaction emojis.
 
@@ -857,25 +857,46 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		timeout_loser: discord.Member | None = None
 
 		try:
-			# Run in parallel so both have the same 30s window.
+			# Run in parallel so both have the same timer window.
 			res_a, res_b = await asyncio.gather(
-				_ppc_prompt_choice(ctx=ctx, player=author, opponent=opponent, timeout_seconds=30.0),
-				_ppc_prompt_choice(ctx=ctx, player=opponent, opponent=author, timeout_seconds=30.0),
+				_ppc_prompt_choice(ctx=ctx, player=author, opponent=opponent, timeout_seconds=15.0),
+				_ppc_prompt_choice(ctx=ctx, player=opponent, opponent=author, timeout_seconds=15.0),
 				return_exceptions=True,
 			)
 
-			if isinstance(res_a, Exception):
-				raise res_a
-			if isinstance(res_b, Exception):
-				raise res_b
-			choice_a = res_a
-			choice_b = res_b
-		except TimeoutError as e:
-			# Figure out who timed out (best-effort). If ambiguous, treat invoker as loser.
+			# Determine if a specific player timed out.
+			if isinstance(res_a, TimeoutError) and not isinstance(res_b, TimeoutError):
+				timeout_loser = author
+			elif isinstance(res_b, TimeoutError) and not isinstance(res_a, TimeoutError):
+				timeout_loser = opponent
+			elif isinstance(res_a, TimeoutError) and isinstance(res_b, TimeoutError):
+				# Both timed out: disconnect both.
+				for m in (author, opponent):
+					try:
+						await m.edit(voice_channel=None, reason="PPC - timed out (no choice)")
+					except discord.Forbidden:
+						await ctx.send("Je n'ai pas la permission de déconnecter des membres (permission: `Move Members`).")
+						return
+					except discord.HTTPException as e:
+						print(f"[ppc] HTTPException while disconnecting timeout player: {e}", flush=True)
+						await ctx.send("Je n'ai pas réussi à déconnecter un joueur (erreur Discord).")
+						return
+				await ctx.send("Temps écoulé. Aucun joueur n'a choisi à temps.")
+				return
+
+			# Propagate other errors
+			for r in (res_a, res_b):
+				if isinstance(r, Exception) and not isinstance(r, TimeoutError):
+					raise r
+
+			# If no timeout, choices are set.
+			if timeout_loser is None:
+				choice_a = res_a  # type: ignore[assignment]
+				choice_b = res_b  # type: ignore[assignment]
+		except TimeoutError:
+			# Shouldn't happen because we handle TimeoutError from gather results above.
 			timeout_loser = author
-			# If opponent already chose but author didn't, loser is author; vice versa.
-			# (We don't have partial results easily with gather+exceptions, so keep simple.)
-			await ctx.send("Temps écoulé (30s). Un joueur n'a pas choisi à temps.")
+			await ctx.send("Temps écoulé. Un joueur n'a pas choisi à temps.")
 		except RuntimeError as e:
 			if str(e) in {"dm_failed", "cannot_add_reactions"}:
 				await ctx.send(
