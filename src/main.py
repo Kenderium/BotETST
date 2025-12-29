@@ -584,7 +584,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		embed.add_field(name=f"{p}damn [@membre]", value="Damn quelqu'un (ou juste 'Damn.').", inline=True)
 		embed.add_field(
 			name=f"{p}ppc @membre",
-			value="Pierre-Papier-Ciseaux (1 manche). Vous devez être dans le même vocal.",
+			value=(
+				"Pierre-Papier-Ciseaux (1 manche). Vous devez être dans le même vocal. "
+				"Choix en DM via réactions 🪨📄✂️."
+			),
 			inline=False,
 		)
 		embed.add_field(name=f"{p}hi [XXX]", value="Invoque quelqu'un (DJ, Nicoow, Lucas, Grimdal, Kenderium, etc.) ou toi si rien n'est spécifié.", inline=True)
@@ -737,9 +740,6 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		c = choice.strip().lower()
 		return {"rock": "🪨", "paper": "📄", "scissors": "✂️"}.get(c, "")
 
-	def _ppc_pick() -> str:
-		return random.choice(["rock", "paper", "scissors"])
-
 	def _ppc_result(a: str, b: str) -> int:
 		"""Return 0=tie, 1=a wins, -1=b wins."""
 		a = a.strip().lower()
@@ -752,6 +752,69 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			("paper", "rock"),
 		}
 		return 1 if (a, b) in wins else -1
+
+	_PPC_EMOJI_TO_CHOICE: dict[str, str] = {"🪨": "rock", "📄": "paper", "✂️": "scissors"}
+	_PPC_CHOICE_TO_EMOJI: dict[str, str] = {v: k for k, v in _PPC_EMOJI_TO_CHOICE.items()}
+
+	async def _ppc_prompt_choice(
+		*,
+		ctx: commands.Context,
+		player: discord.Member,
+		opponent: discord.Member,
+		timeout_seconds: float = 30.0,
+	) -> str:
+		"""Ask `player` in DM to pick, using reaction emojis.
+
+		Returns: one of rock/paper/scissors.
+		Raises: TimeoutError if no pick in time.
+		"""
+		try:
+			dm = await player.create_dm()
+		except Exception as e:
+			# DMs disabled or otherwise impossible.
+			raise RuntimeError("dm_failed") from e
+
+		msg = await dm.send(
+			(
+				"**PPC — Pierre Papier Ciseaux**\n"
+				f"Adversaire: {opponent.name}\n\n"
+				"Clique sur une réaction pour choisir:\n"
+				"🪨 = Pierre | 📄 = Papier | ✂️ = Ciseaux"
+			)
+		)
+		# Pre-add reactions so user only has to click.
+		for emoji in ("🪨", "📄", "✂️"):
+			try:
+				await msg.add_reaction(emoji)
+			except Exception:
+				# If we can't add reactions for some reason, fail fast.
+				raise RuntimeError("cannot_add_reactions")
+
+		def check(reaction: discord.Reaction, user: discord.abc.User) -> bool:
+			if user.id != player.id:
+				return False
+			if reaction.message.id != msg.id:
+				return False
+			return str(reaction.emoji) in _PPC_EMOJI_TO_CHOICE
+
+		try:
+			reaction, _user = await ctx.bot.wait_for(
+				"reaction_add",
+				timeout=timeout_seconds,
+				check=check,
+			)
+		except asyncio.TimeoutError as e:
+			raise TimeoutError("ppc_choice_timeout") from e
+
+		choice = _PPC_EMOJI_TO_CHOICE.get(str(reaction.emoji))
+		if not choice:
+			# Shouldn't happen because of check, but keep safe.
+			raise RuntimeError("invalid_choice")
+		try:
+			await dm.send(f"Choix enregistré: {_PPC_CHOICE_TO_EMOJI[choice]} **{choice}**")
+		except Exception:
+			pass
+		return choice
 
 	@bot.command(name="ppc", aliases=["PPC"])
 	async def ppc(ctx: commands.Context, opponent: Optional[discord.Member] = None) -> None:
@@ -785,8 +848,65 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			await ctx.send("Vous devez être dans le même salon vocal.")
 			return
 
-		choice_a = _ppc_pick()
-		choice_b = _ppc_pick()
+		await ctx.send("PPC lancé. Je vous envoie un DM à tous les deux: choisissez avec 🪨 📄 ✂️.")
+
+		# Collect choices privately via DMs.
+		# If one player times out, they lose.
+		choice_a: str | None = None
+		choice_b: str | None = None
+		timeout_loser: discord.Member | None = None
+
+		try:
+			# Run in parallel so both have the same 30s window.
+			res_a, res_b = await asyncio.gather(
+				_ppc_prompt_choice(ctx=ctx, player=author, opponent=opponent, timeout_seconds=30.0),
+				_ppc_prompt_choice(ctx=ctx, player=opponent, opponent=author, timeout_seconds=30.0),
+				return_exceptions=True,
+			)
+
+			if isinstance(res_a, Exception):
+				raise res_a
+			if isinstance(res_b, Exception):
+				raise res_b
+			choice_a = res_a
+			choice_b = res_b
+		except TimeoutError as e:
+			# Figure out who timed out (best-effort). If ambiguous, treat invoker as loser.
+			timeout_loser = author
+			# If opponent already chose but author didn't, loser is author; vice versa.
+			# (We don't have partial results easily with gather+exceptions, so keep simple.)
+			await ctx.send("Temps écoulé (30s). Un joueur n'a pas choisi à temps.")
+		except RuntimeError as e:
+			if str(e) in {"dm_failed", "cannot_add_reactions"}:
+				await ctx.send(
+					"Impossible d'envoyer les DMs PPC (DM fermés ou réactions impossibles). "
+					"Active tes DMs pour ce serveur puis réessaye."
+				)
+				return
+			print(f"[ppc] error while collecting choices: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Erreur interne pendant le PPC (collecte des choix).")
+			return
+		except Exception as e:
+			print(f"[ppc] unexpected error while collecting choices: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Erreur interne pendant le PPC.")
+			return
+
+		# If someone timed out, disconnect them and stop.
+		if timeout_loser is not None:
+			try:
+				await timeout_loser.edit(
+					voice_channel=None,
+					reason="PPC - timed out (no choice)",
+				)
+			except discord.Forbidden:
+				await ctx.send("Je n'ai pas la permission de déconnecter des membres (permission: `Move Members`).")
+			except discord.HTTPException as e:
+				print(f"[ppc] HTTPException while disconnecting timeout loser: {e}", flush=True)
+				await ctx.send("Je n'ai pas réussi à déconnecter le joueur en retard (erreur Discord).")
+			return
+
+		# Normal resolution
+		assert choice_a is not None and choice_b is not None
 		res = _ppc_result(choice_a, choice_b)
 
 		lines = []
