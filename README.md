@@ -55,6 +55,7 @@ journalctl -u etstBotDiscord -f
 - `!hello`
 - `!users`
 - `!damn`
+- `!ppc @membre` (Pierre-Papier-Ciseaux 1 manche; vous devez être dans le même vocal; le perdant est déconnecté du vocal)
 - `!DJ`
 - `!Nicoow`, `!Lucas`, `!Grimdal`, `!Kenderium`
 - `!stats minecraft` (status serveur + joueurs en ligne)
@@ -63,6 +64,11 @@ journalctl -u etstBotDiscord -f
 - `!stats smite1 [pseudo]` (si pseudo absent, utilise l’ID Steam enregistré via `!id`)
 - `!stats smite2 [pseudo]` (si pseudo absent, utilise l’ID Steam enregistré via `!id`)
 - `!stats rocketleague [pseudo]` (si pseudo absent, utilise l’ID Epic enregistré via `!id`)
+
+### Notes permissions (vocal)
+
+- Pour `!ppc`, le bot doit avoir la permission **Move Members** afin de pouvoir déconnecter le perdant du salon vocal.
+- Les 2 joueurs doivent être dans **le même salon vocal**.
 
 ## Variables d’environnement
 

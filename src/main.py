@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -583,6 +582,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		embed.add_field(name=f"{p}hello", value="Dit bonjour.", inline=True)
 		embed.add_field(name=f"{p}users", value="Nombre de membres sur le serveur.", inline=True)
 		embed.add_field(name=f"{p}damn [@membre]", value="Damn quelqu'un (ou juste 'Damn.').", inline=True)
+		embed.add_field(
+			name=f"{p}ppc @membre",
+			value="Pierre-Papier-Ciseaux (1 manche). Vous devez être dans le même vocal.",
+			inline=False,
+		)
 		embed.add_field(name=f"{p}hi [XXX]", value="Invoque quelqu'un (DJ, Nicoow, Lucas, Grimdal, Kenderium, etc.) ou toi si rien n'est spécifié.", inline=True)
 		embed.add_field(
 			name=f"{p}id",
@@ -728,6 +732,87 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			await ctx.send("Damn.")
 			return
 		await ctx.send(f"Damn {member.mention}.")
+
+	def _ppc_choice_emoji(choice: str) -> str:
+		c = choice.strip().lower()
+		return {"rock": "🪨", "paper": "📄", "scissors": "✂️"}.get(c, "")
+
+	def _ppc_pick() -> str:
+		return random.choice(["rock", "paper", "scissors"])
+
+	def _ppc_result(a: str, b: str) -> int:
+		"""Return 0=tie, 1=a wins, -1=b wins."""
+		a = a.strip().lower()
+		b = b.strip().lower()
+		if a == b:
+			return 0
+		wins = {
+			("rock", "scissors"),
+			("scissors", "paper"),
+			("paper", "rock"),
+		}
+		return 1 if (a, b) in wins else -1
+
+	@bot.command(name="ppc", aliases=["PPC"])
+	async def ppc(ctx: commands.Context, opponent: Optional[discord.Member] = None) -> None:
+		"""Pierre-Papier-Ciseaux (1 manche) vs un membre. Perdant: kick du vocal (disconnect)."""
+		if ctx.guild is None:
+			await ctx.send("Cette commande doit être utilisée sur un serveur.")
+			return
+		if opponent is None:
+			await ctx.send(f"Usage: `{settings.prefix}ppc @membre`")
+			return
+		if opponent.bot:
+			await ctx.send("Tu ne peux pas défier un bot.")
+			return
+		if opponent.id == ctx.author.id:
+			await ctx.send("Tu ne peux pas te défier toi-même.")
+			return
+
+		author = ctx.author
+		if not isinstance(author, discord.Member):
+			await ctx.send("Impossible de récupérer ton profil membre.")
+			return
+
+		# Voice checks
+		if not author.voice or not author.voice.channel:
+			await ctx.send("Tu dois être dans un salon vocal pour lancer un PPC.")
+			return
+		if not opponent.voice or not opponent.voice.channel:
+			await ctx.send(f"{opponent.mention} doit être dans un salon vocal pour jouer.")
+			return
+		if author.voice.channel.id != opponent.voice.channel.id:
+			await ctx.send("Vous devez être dans le même salon vocal.")
+			return
+
+		choice_a = _ppc_pick()
+		choice_b = _ppc_pick()
+		res = _ppc_result(choice_a, choice_b)
+
+		lines = []
+		lines.append(f"PPC — {author.mention} vs {opponent.mention}")
+		lines.append(f"{author.mention}: {_ppc_choice_emoji(choice_a)} **{choice_a}**")
+		lines.append(f"{opponent.mention}: {_ppc_choice_emoji(choice_b)} **{choice_b}**")
+
+		if res == 0:
+			lines.append("Égalité — personne n'est expulsé du vocal.")
+			await ctx.send("\n".join(lines))
+			return
+
+		winner = author if res == 1 else opponent
+		loser = opponent if res == 1 else author
+		lines.append(f"Vainqueur: {winner.mention}")
+		lines.append(f"Perdant: {loser.mention} — *déconnexion du vocal*.")
+		await ctx.send("\n".join(lines))
+
+		# Attempt to disconnect the loser (requires Move Members permission for the bot)
+		try:
+			await loser.edit(voice_channel=None, reason="PPC - loser disconnected from voice")
+		except discord.Forbidden:
+			await ctx.send("Je n'ai pas la permission de déconnecter des membres (permission: `Move Members`).")
+		except discord.HTTPException as e:
+			print(f"[ppc] HTTPException while disconnecting: {e}", flush=True)
+			await ctx.send("Je n'ai pas réussi à déconnecter le perdant (erreur Discord).")
 
 	_callouts = {
 		"DJ": "My vengance is going to be huge",
