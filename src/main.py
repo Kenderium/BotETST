@@ -180,6 +180,19 @@ class _TtlCache:
 		self._store: dict[str, tuple[float, object]] = {}
 		self._locks: dict[str, "asyncio.Lock"] = {}
 
+	def get_with_remaining_ttl(self, key: str) -> tuple[object, float] | None:
+		"""Return (value, remaining_seconds) if present and not expired."""
+		now = time.monotonic()
+		item = self._store.get(key)
+		if item is None:
+			return None
+		expires_at, value = item
+		remaining = float(expires_at - now)
+		if remaining <= 0:
+			self._store.pop(key, None)
+			return None
+		return value, remaining
+
 	def get(self, key: str) -> object | None:
 		now = time.monotonic()
 		item = self._store.get(key)
@@ -197,8 +210,9 @@ class _TtlCache:
 	async def get_or_set(self, *, key: str, ttl_seconds: float, factory):
 		import asyncio
 
-		cached = self.get(key)
-		if cached is not None:
+		cached_with_ttl = self.get_with_remaining_ttl(key)
+		if cached_with_ttl is not None:
+			cached, _remaining = cached_with_ttl
 			print(f"[Cache HIT] {key}", flush=True)
 			return cached
 
@@ -208,14 +222,44 @@ class _TtlCache:
 			self._locks[key] = lock
 
 		async with lock:
-			cached2 = self.get(key)
-			if cached2 is not None:
+			cached2_with_ttl = self.get_with_remaining_ttl(key)
+			if cached2_with_ttl is not None:
+				cached2, _remaining2 = cached2_with_ttl
 				print(f"[Cache HIT] {key}", flush=True)
 				return cached2
 			print(f"[Cache MISS] {key} - calling API", flush=True)
 			value = await factory()
 			self.set(key, value, ttl_seconds)
 			return value
+
+	async def get_or_set_with_meta(self, *, key: str, ttl_seconds: float, factory) -> tuple[object, bool, float]:
+		"""Return (value, from_cache, remaining_seconds).
+
+		When not cached, remaining_seconds is approximately ttl_seconds.
+		"""
+		import asyncio
+
+		cached_with_ttl = self.get_with_remaining_ttl(key)
+		if cached_with_ttl is not None:
+			value, remaining = cached_with_ttl
+			print(f"[Cache HIT] {key}", flush=True)
+			return value, True, remaining
+
+		lock = self._locks.get(key)
+		if lock is None:
+			lock = asyncio.Lock()
+			self._locks[key] = lock
+
+		async with lock:
+			cached2_with_ttl = self.get_with_remaining_ttl(key)
+			if cached2_with_ttl is not None:
+				value2, remaining2 = cached2_with_ttl
+				print(f"[Cache HIT] {key}", flush=True)
+				return value2, True, remaining2
+			print(f"[Cache MISS] {key} - calling API", flush=True)
+			value3 = await factory()
+			self.set(key, value3, ttl_seconds)
+			return value3, False, float(ttl_seconds)
 
 
 class _PersistentTtlCache:
@@ -292,6 +336,24 @@ class _PersistentTtlCache:
 			return None
 		return value
 
+	def get_with_remaining_ttl(self, key: str) -> tuple[object, float] | None:
+		"""Return (value, remaining_seconds) if present and not expired."""
+		now = time.time()
+		data = self._ensure_loaded()
+		item = data.get(key)
+		if item is None:
+			return None
+		expires_at, value = item
+		remaining = float(expires_at - now)
+		if remaining <= 0:
+			data.pop(key, None)
+			try:
+				self._atomic_save(data)
+			except Exception:
+				pass
+			return None
+		return value, remaining
+
 	def set(self, key: str, value: object, ttl_seconds: float) -> None:
 		data = self._ensure_loaded()
 		data[key] = (time.time() + float(ttl_seconds), value)
@@ -303,8 +365,9 @@ class _PersistentTtlCache:
 	async def get_or_set(self, *, key: str, ttl_seconds: float, factory):
 		import asyncio
 
-		cached = self.get(key)
-		if cached is not None:
+		cached_with_ttl = self.get_with_remaining_ttl(key)
+		if cached_with_ttl is not None:
+			cached, _remaining = cached_with_ttl
 			print(f"[Cache HIT] {key}", flush=True)
 			return cached
 
@@ -314,14 +377,110 @@ class _PersistentTtlCache:
 			self._locks[key] = lock
 
 		async with lock:
-			cached2 = self.get(key)
-			if cached2 is not None:
+			cached2_with_ttl = self.get_with_remaining_ttl(key)
+			if cached2_with_ttl is not None:
+				cached2, _remaining2 = cached2_with_ttl
 				print(f"[Cache HIT] {key}", flush=True)
 				return cached2
 			print(f"[Cache MISS] {key} - calling API", flush=True)
 			value = await factory()
 			self.set(key, value, ttl_seconds)
 			return value
+
+	async def get_or_set_with_meta(self, *, key: str, ttl_seconds: float, factory) -> tuple[object, bool, float]:
+		"""Return (value, from_cache, remaining_seconds).
+
+		When not cached, remaining_seconds is approximately ttl_seconds.
+		"""
+		import asyncio
+
+		cached_with_ttl = self.get_with_remaining_ttl(key)
+		if cached_with_ttl is not None:
+			value, remaining = cached_with_ttl
+			print(f"[Cache HIT] {key}", flush=True)
+			return value, True, remaining
+
+		lock = self._locks.get(key)
+		if lock is None:
+			lock = asyncio.Lock()
+			self._locks[key] = lock
+
+		async with lock:
+			cached2_with_ttl = self.get_with_remaining_ttl(key)
+			if cached2_with_ttl is not None:
+				value2, remaining2 = cached2_with_ttl
+				print(f"[Cache HIT] {key}", flush=True)
+				return value2, True, remaining2
+			print(f"[Cache MISS] {key} - calling API", flush=True)
+			value3 = await factory()
+			self.set(key, value3, ttl_seconds)
+			return value3, False, float(ttl_seconds)
+
+
+class SupercellHttpError(RuntimeError):
+	def __init__(self, status: int, url: str, payload: object):
+		super().__init__(f"Supercell HTTP {status}")
+		self.status = status
+		self.url = url
+		self.payload = payload
+
+
+async def _supercell_get_json(*, base_url: str, token: str, path: str) -> dict:
+	import aiohttp
+
+	url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+	headers = {
+		"Authorization": f"Bearer {token}",
+		"Accept": "application/json",
+	}
+	async with aiohttp.ClientSession() as session:
+		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+			data = await resp.json(content_type=None)
+			if resp.status >= 400:
+				raise SupercellHttpError(resp.status, url, data)
+			if isinstance(data, dict):
+				return data
+			raise RuntimeError(f"Supercell returned non-object JSON for {url}: {type(data).__name__}")
+
+
+async def _steam_current_players(*, appid: int) -> int:
+	import aiohttp
+
+	url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={appid}"
+	async with aiohttp.ClientSession() as session:
+		async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+			data = await resp.json(content_type=None)
+			if resp.status >= 400:
+				raise RuntimeError(f"Steam HTTP {resp.status}")
+			try:
+				return int(((data or {}).get("response") or {}).get("player_count") or 0)
+			except Exception:
+				return 0
+
+
+def _format_duration_brief(seconds: float) -> str:
+	seconds_i = int(max(0, seconds))
+	days, rem = divmod(seconds_i, 86400)
+	hours, rem = divmod(rem, 3600)
+	minutes, secs = divmod(rem, 60)
+	parts: list[str] = []
+	if days:
+		parts.append(f"{days}j")
+	if hours or days:
+		parts.append(f"{hours}h")
+	if minutes or hours or days:
+		parts.append(f"{minutes}m")
+	if not parts:
+		parts.append(f"{secs}s")
+	return " ".join(parts)
+
+
+def _cache_note(*, from_cache: bool, remaining_seconds: float, ttl_seconds: float) -> str:
+	ttl_s = _format_duration_brief(ttl_seconds)
+	if from_cache:
+		remaining_s = _format_duration_brief(remaining_seconds)
+		return f"Cache: HIT (reste {remaining_s}) • TTL {ttl_s}"
+	return f"Cache: MISS • TTL {ttl_s}"
 
 
 class _UserIdStore:
@@ -541,8 +700,11 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	api_cache = _PersistentTtlCache(api_cache_path)
 	TTL_MINECRAFT_SECONDS = 30.0
 	TTL_ARK_SECONDS = 30.0
+	TTL_SATISFACTORY_SECONDS = 30.0
 	TTL_TRN_SECONDS = 120.0
 	TTL_RL_SECONDS = 86400.0  # 24 hours for RapidAPI caching
+	TTL_SUPERCELL_SECONDS = 300.0
+	TTL_STEAM_SECONDS = 300.0
 
 	user_ids_path = os.path.join(os.getcwd(), "data", "user_ids.json")
 	user_ids = _UserIdStore(user_ids_path)
@@ -988,6 +1150,15 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			)
 		return _split_host_port(raw, 27015)
 
+	def _get_satisfactory_target() -> tuple[str, int]:
+		raw = os.getenv("SATISFACTORY_SERVER", "").strip()
+		if not raw:
+			raise RuntimeError(
+				"SATISFACTORY_SERVER is missing (example: etst.duckdns.org:7779). "
+				"Note: this should be the server query port (A2S)."
+			)
+		return _split_host_port(raw, 7779)
+
 	async def _ark_status_text_etst1() -> str:
 		import asyncio
 
@@ -1014,6 +1185,30 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			map_s = f" — map `{map_name}`" if map_name else ""
 			vac_s = "VAC ON" if vac else "VAC OFF"
 			return f"ARK `{name}`: {online_s}/{max_s} joueurs{map_s} — {vac_s}"
+
+		return await asyncio.to_thread(_probe)
+
+	async def _satisfactory_status_text() -> str:
+		import asyncio
+
+		import a2s  # type: ignore
+
+		host, port = _get_satisfactory_target()
+
+		def _probe() -> str:
+			info_fn = getattr(a2s, "info", None)
+			if info_fn is None:
+				raise RuntimeError(
+					"A2S library mismatch: expected `a2s.info()` but it is missing. "
+					"Fix: `pip uninstall a2s` then `pip install -r requirements.txt` (installs `python-a2s`)."
+				)
+			info = info_fn((host, port), timeout=5.0)
+			online = getattr(info, "player_count", None)
+			max_p = getattr(info, "max_players", None)
+			name = getattr(info, "server_name", None) or "Satisfactory"
+			online_s = str(online) if online is not None else "?"
+			max_s = str(max_p) if max_p is not None else "?"
+			return f"Satisfactory `{name}`: {online_s}/{max_s} joueurs"
 
 		return await asyncio.to_thread(_probe)
 
@@ -1049,12 +1244,15 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 		if game_key in {"minecraft", "mc"}:
 			try:
-				text = await api_cache.get_or_set(
+				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key="minecraft_status",
 					ttl_seconds=TTL_MINECRAFT_SECONDS,
 					factory=_mc_status_text,
 				)
-				await ctx.send(text)
+				text = str(text_obj)
+				await ctx.send(
+					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_MINECRAFT_SECONDS)}"
+				)
 			except Exception as e:
 				await ctx.send(
 					"Impossible de récupérer le status Minecraft. "
@@ -1066,18 +1264,186 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 		if game_key in {"ark"}:
 			try:
-				text = await api_cache.get_or_set(
+				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key="ark_etst1_status",
 					ttl_seconds=TTL_ARK_SECONDS,
 					factory=_ark_status_text_etst1,
 				)
-				await ctx.send(text)
+				text = str(text_obj)
+				await ctx.send(
+					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_ARK_SECONDS)}"
+				)
 			except Exception as e:
 				await ctx.send(
 					"Impossible de récupérer le status ARK. "
 					"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
 				)
 				print(f"ARK status error: {type(e).__name__}: {e}", flush=True)
+			return
+
+		if game_key in {"satisfactory", "sat", "satis"}:
+			try:
+				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key="satisfactory_status",
+					ttl_seconds=TTL_SATISFACTORY_SECONDS,
+					factory=_satisfactory_status_text,
+				)
+				text = str(text_obj)
+				await ctx.send(
+					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SATISFACTORY_SECONDS)}"
+				)
+			except Exception as e:
+				await ctx.send(
+					"Impossible de récupérer le status Satisfactory. "
+					"Vérifie `SATISFACTORY_SERVER` (IP:port query). Port attendu: `7779`."
+				)
+				print(f"Satisfactory status error: {type(e).__name__}: {e}", flush=True)
+			return
+
+		if game_key in {"lethalcompany", "lethal company", "lethal"}:
+			try:
+				count_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key="steam:current_players:1966720",
+					ttl_seconds=TTL_STEAM_SECONDS,
+					factory=lambda: _steam_current_players(appid=1966720),
+				)
+				count = int(count_obj) if isinstance(count_obj, (int, float, str)) else 0
+				await ctx.send(
+					f"Lethal Company — joueurs en ligne (Steam): **{count}**\n"
+					f"{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_STEAM_SECONDS)}"
+				)
+			except Exception as e:
+				print(f"Steam current players error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send("Impossible de récupérer les joueurs en ligne via Steam.")
+			return
+
+		if game_key in {"clashofclans", "clash", "coc"}:
+			token = os.getenv("COC_API_TOKEN", "").strip()
+			if not token:
+				await ctx.send(
+					"Pour Clash of Clans, il faut un token officiel Supercell + IP whitelistée. "
+					"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats coc #TAG`."
+				)
+				return
+			tag_raw = pseudo.strip()
+			if not tag_raw:
+				await ctx.send("Tag manquant. Exemple: `!stats coc #2PP` (avec le #).")
+				return
+			tag = tag_raw.upper()
+			if not tag.startswith("#"):
+				tag = f"#{tag}"
+			encoded = quote(tag, safe="")
+			path = f"players/{encoded}"
+			cache_key = f"supercell:coc:player:{tag}".lower()
+			try:
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key=cache_key,
+					ttl_seconds=TTL_SUPERCELL_SECONDS,
+					factory=lambda: _supercell_get_json(
+						base_url="https://api.clashofclans.com/v1",
+						token=token,
+						path=path,
+					),
+				)
+				payload = payload_obj if isinstance(payload_obj, dict) else {}
+				name = payload.get("name") or tag
+				th = payload.get("townHallLevel")
+				trophies = payload.get("trophies")
+				best = payload.get("bestTrophies")
+				war_stars = payload.get("warStars")
+				clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
+				embed = discord.Embed(
+					title="Clash of Clans — Joueur",
+					description=f"**{name}** ({tag})",
+					color=discord.Color.blurple(),
+				)
+				embed.add_field(name="HDV", value=str(th) if th is not None else "?", inline=True)
+				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+				embed.add_field(name="War stars", value=str(war_stars) if war_stars is not None else "?", inline=True)
+				embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
+				embed.set_footer(
+					text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				)
+				await ctx.send(embed=embed)
+			except SupercellHttpError as e:
+				print(f"CoC HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+				if e.status in {401, 403}:
+					await ctx.send(
+						"Supercell refuse l’accès (401/403). Vérifie `COC_API_TOKEN` "
+						"et l’IP whitelistée sur developer.clashofclans.com."
+					)
+				elif e.status == 404:
+					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+				elif e.status == 429:
+					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+			except Exception as e:
+				print(f"CoC error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send("Impossible de récupérer les infos Clash of Clans.")
+			return
+
+		if game_key in {"brawlstars", "brawl", "bs"}:
+			token = os.getenv("BRAWLSTARS_API_TOKEN", "").strip()
+			if not token:
+				await ctx.send(
+					"Pour Brawl Stars, il faut un token officiel Supercell + IP whitelistée. "
+					"Ajoute `BRAWLSTARS_API_TOKEN` dans ton `.env`, puis utilise: `!stats brawl #TAG`."
+				)
+				return
+			tag_raw = pseudo.strip()
+			if not tag_raw:
+				await ctx.send("Tag manquant. Exemple: `!stats brawl #2PP` (avec le #).")
+				return
+			tag = tag_raw.upper()
+			if not tag.startswith("#"):
+				tag = f"#{tag}"
+			encoded = quote(tag, safe="")
+			path = f"players/{encoded}"
+			cache_key = f"supercell:brawlstars:player:{tag}".lower()
+			try:
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key=cache_key,
+					ttl_seconds=TTL_SUPERCELL_SECONDS,
+					factory=lambda: _supercell_get_json(
+						base_url="https://api.brawlstars.com/v1",
+						token=token,
+						path=path,
+					),
+				)
+				payload = payload_obj if isinstance(payload_obj, dict) else {}
+				name = payload.get("name") or tag
+				trophies = payload.get("trophies")
+				best = payload.get("highestTrophies")
+				exp = payload.get("expLevel")
+				club = (payload.get("club") or {}).get("name") if isinstance(payload.get("club"), dict) else None
+				embed = discord.Embed(
+					title="Brawl Stars — Joueur",
+					description=f"**{name}** ({tag})",
+					color=discord.Color.blurple(),
+				)
+				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+				embed.add_field(name="Niveau", value=str(exp) if exp is not None else "?", inline=True)
+				embed.add_field(name="Club", value=str(club) if club else "Aucun", inline=True)
+				embed.set_footer(
+					text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				)
+				await ctx.send(embed=embed)
+			except SupercellHttpError as e:
+				print(f"BrawlStars HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+				if e.status in {401, 403}:
+					await ctx.send("Supercell refuse l’accès (401/403). Vérifie `BRAWLSTARS_API_TOKEN` et l’IP whitelistée.")
+				elif e.status == 404:
+					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+				elif e.status == 429:
+					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+			except Exception as e:
+				print(f"BrawlStars error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send("Impossible de récupérer les infos Brawl Stars.")
 			return
 
 		if game_key in {"smite2", "smite 2", "smite_2"}:
@@ -1104,7 +1470,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
 			try:
 				cache_key = f"trn:smite2:{platform}:{identifier}".lower()
-				payload = await api_cache.get_or_set(
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key=cache_key,
 					ttl_seconds=TTL_TRN_SECONDS,
 					factory=lambda: _trn_get_profile(
@@ -1114,11 +1480,13 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						identifier=identifier,
 					),
 				)
+				payload = payload_obj  # type: ignore[assignment]
 				embed = _trn_build_embed(
 					title="TRN — Smite 2",
 					payload=payload,  # type: ignore[arg-type]
 					profile_url=f"https://tracker.gg/smite2/profile/{platform}/{quote(identifier, safe='')}"
 				)
+				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_TRN_SECONDS))
 				await ctx.send(embed=embed)
 			except TrnHttpError as e:
 				print(f"TRN Smite2 HTTP {e.status}: {e.payload}", flush=True)
@@ -1159,7 +1527,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
 			try:
 				cache_key = f"trn:smite:{platform}:{identifier}".lower()
-				payload = await api_cache.get_or_set(
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key=cache_key,
 					ttl_seconds=TTL_TRN_SECONDS,
 					factory=lambda: _trn_get_profile(
@@ -1169,11 +1537,13 @@ async def build_bot(settings: Settings) -> commands.Bot:
 						identifier=identifier,
 					),
 				)
+				payload = payload_obj  # type: ignore[assignment]
 				embed = _trn_build_embed(
 					title="TRN — Smite",
 					payload=payload,  # type: ignore[arg-type]
 					profile_url=f"https://tracker.gg/smite/profile/{platform}/{quote(identifier, safe='')}"
 				)
+				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_TRN_SECONDS))
 				await ctx.send(embed=embed)
 			except TrnHttpError as e:
 				print(f"TRN Smite HTTP {e.status}: {e.payload}", flush=True)
@@ -1211,16 +1581,18 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					url = f"https://{rapid_host}/tournaments/europe"
 					print(f"RapidAPI RL Tournaments GET {url}", flush=True)
 					cache_key = f"rapidapi:rl:tournaments:europe".lower()
-					payload = await api_cache.get_or_set(
+					payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 						key=cache_key,
 						ttl_seconds=TTL_RL_SECONDS,
 						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
 					)
+					payload = payload_obj  # type: ignore[assignment]
 					print(f"RapidAPI RL Tournaments payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
 					embed = discord.Embed(
 						title="Rocket League — Tournois Europe",
 						color=discord.Color.blurple(),
 					)
+					embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
 					
 					# Parse tournaments array
 					if isinstance(payload, dict):
@@ -1278,16 +1650,18 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					url = f"https://{rapid_host}/shops/featured"
 					print(f"RapidAPI RL Shop GET {url}", flush=True)
 					cache_key = f"rapidapi:rl:shop:featured".lower()
-					payload = await api_cache.get_or_set(
+					payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 						key=cache_key,
 						ttl_seconds=TTL_RL_SECONDS,
 						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
 					)
+					payload = payload_obj  # type: ignore[assignment]
 					print(f"RapidAPI RL Shop payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
 					embed = discord.Embed(
 						title="Rocket League — Shop Featured",
 						color=discord.Color.blurple(),
 					)
+					embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
 					# Try to extract shop items from payload
 					if isinstance(payload, dict):
 						items = payload.get("items") or payload.get("featured") or payload.get("data") or payload
@@ -1366,16 +1740,18 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			try:
 				print(f"RapidAPI RL GET {url}", flush=True)
 				cache_key = f"rapidapi:rl:{rapid_host}:{url}".lower()
-				payload = await api_cache.get_or_set(
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key=cache_key,
 					ttl_seconds=TTL_RL_SECONDS,
 					factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
 				)
+				payload = payload_obj  # type: ignore[assignment]
 				embed = discord.Embed(
 					title="Rocket League — RapidAPI",
 					description=f"Joueur: `{identifier_norm}`",
 					color=discord.Color.blurple(),
 				)
+				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
 				if rapid_host == "rocket-league1.p.rapidapi.com" and platform not in {"epic", "egs"}:
 					embed.add_field(
 						name="Note",
