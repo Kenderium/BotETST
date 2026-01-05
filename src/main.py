@@ -1259,6 +1259,842 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 		return await asyncio.to_thread(_probe)
 
+	def _unwrap_payload_with_proxy(payload_obj: object) -> tuple[dict, bool]:
+		if (
+			isinstance(payload_obj, tuple)
+			and len(payload_obj) == 2
+			and isinstance(payload_obj[0], dict)
+			and isinstance(payload_obj[1], bool)
+		):
+			return payload_obj[0], payload_obj[1]
+		if isinstance(payload_obj, dict):
+			return payload_obj, False
+		return {}, False
+
+	def _normalize_tag(value: str) -> str:
+		tag = (value or "").strip().upper().replace(" ", "")
+		if tag and not tag.startswith("#"):
+			tag = f"#{tag}"
+		return tag
+
+	async def _stats_minecraft(ctx: commands.Context) -> None:
+		try:
+			text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key="minecraft_status",
+				ttl_seconds=TTL_MINECRAFT_SECONDS,
+				factory=_mc_status_text,
+			)
+			text = str(text_obj)
+			await ctx.send(
+				f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_MINECRAFT_SECONDS)}"
+			)
+		except Exception as e:
+			await ctx.send(
+				"Impossible de récupérer le status Minecraft. "
+				"Vérifie `MINECRAFT_SERVER` (souvent `:25565`). "
+				"Attention: `8123` est fréquemment le port Dynmap (web), pas le port Minecraft."
+			)
+			print(f"Minecraft status error: {type(e).__name__}: {e}", flush=True)
+
+	async def _stats_ark(ctx: commands.Context) -> None:
+		try:
+			text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key="ark_etst1_status",
+				ttl_seconds=TTL_ARK_SECONDS,
+				factory=_ark_status_text_etst1,
+			)
+			text = str(text_obj)
+			await ctx.send(
+				f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_ARK_SECONDS)}"
+			)
+		except Exception as e:
+			await ctx.send(
+				"Impossible de récupérer le status ARK. "
+				"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
+			)
+			print(f"ARK status error: {type(e).__name__}: {e}", flush=True)
+
+	async def _stats_satisfactory(ctx: commands.Context) -> None:
+		try:
+			text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key="satisfactory_status",
+				ttl_seconds=TTL_SATISFACTORY_SECONDS,
+				factory=_satisfactory_status_text,
+			)
+			text = str(text_obj)
+			await ctx.send(
+				f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SATISFACTORY_SECONDS)}"
+			)
+		except Exception as e:
+			await ctx.send(
+				"Impossible de récupérer le status Satisfactory. "
+				"Vérifie `SATISFACTORY_SERVER` (IP:port query). Port attendu: `8888`."
+			)
+			print(f"Satisfactory status error: {type(e).__name__}: {e}", flush=True)
+
+	async def _stats_lethal_company(ctx: commands.Context) -> None:
+		try:
+			count_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key="steam:current_players:1966720",
+				ttl_seconds=TTL_STEAM_SECONDS,
+				factory=lambda: _steam_current_players(appid=1966720),
+			)
+			count = int(count_obj) if isinstance(count_obj, (int, float, str)) else 0
+			await ctx.send(
+				f"Lethal Company — joueurs en ligne (Steam): **{count}**\n"
+				f"{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_STEAM_SECONDS)}"
+			)
+		except Exception as e:
+			print(f"Steam current players error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les joueurs en ligne via Steam.")
+
+	async def _stats_coc_player(ctx: commands.Context, pseudo: str) -> None:
+		token = os.getenv("COC_API_TOKEN", "").strip()
+		if not token:
+			await ctx.send(
+				"Pour Clash of Clans, il faut un token officiel Supercell + IP whitelistée. "
+				"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats coc #TAG`."
+			)
+			return
+		coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
+		coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
+		tag_raw = (pseudo or "").strip()
+		if not tag_raw:
+			entry = await user_ids.get(ctx.author.id)
+			tag_raw = (entry.get("coc") or "").strip()
+		if not tag_raw:
+			await ctx.send("Tag manquant. Exemple: `!stats coc #2PP` (avec le #) ou enregistre-le avec `!id coc #2PP`.")
+			return
+		tag = _normalize_tag(tag_raw)
+		encoded = quote(tag, safe="")
+		path = f"players/{encoded}"
+		cache_key = f"supercell:coc:player:{tag}".lower()
+		try:
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_SUPERCELL_SECONDS,
+				factory=lambda: _bearer_get_json_with_proxy_fallback(
+					label="Clash of Clans",
+					token=token,
+					path=path,
+					primary_base_url=coc_base_url,
+					proxy_base_url=coc_proxy_url,
+				),
+			)
+			payload, used_proxy = _unwrap_payload_with_proxy(payload_obj)
+			name = payload.get("name") or tag
+			th = payload.get("townHallLevel")
+			trophies = payload.get("trophies")
+			best = payload.get("bestTrophies")
+			war_stars = payload.get("warStars")
+			clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
+			embed = discord.Embed(
+				title="Clash of Clans — Joueur",
+				description=f"**{name}** ({tag})",
+				color=discord.Color.blurple(),
+			)
+			embed.add_field(name="HDV", value=str(th) if th is not None else "?", inline=True)
+			embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+			embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+			embed.add_field(name="War stars", value=str(war_stars) if war_stars is not None else "?", inline=True)
+			embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
+			footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+			if used_proxy:
+				footer = f"{footer} • Proxy RoyaleAPI"
+			embed.set_footer(text=footer)
+			await ctx.send(embed=embed)
+		except SupercellHttpError as e:
+			print(f"CoC HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send(
+					"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
+					"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
+				)
+			elif e.status == 404:
+				await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+			elif e.status == 429:
+				await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+			else:
+				await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+		except Exception as e:
+			print(f"CoC error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les infos Clash of Clans.")
+
+	async def _resolve_coc_clan_tag(ctx: commands.Context, pseudo: str) -> str:
+		tag_raw = (pseudo or "").strip()
+		if tag_raw:
+			return _normalize_tag(tag_raw)
+		entry = await user_ids.get(ctx.author.id)
+		tag_raw = (entry.get("cocclan") or "").strip()
+		if tag_raw:
+			return _normalize_tag(tag_raw)
+		# Try deriving clan tag from saved CoC player tag
+		player_tag_raw = (entry.get("coc") or "").strip()
+		if not player_tag_raw:
+			return ""
+		player_tag = _normalize_tag(player_tag_raw)
+		return await _derive_coc_clan_tag_from_player_tag(player_tag)
+
+	async def _derive_coc_clan_tag_from_player_tag(player_tag: str) -> str:
+		token = os.getenv("COC_API_TOKEN", "").strip()
+		if not token:
+			return ""
+		coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
+		coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
+		encoded_player = quote(player_tag, safe="")
+		player_path = f"players/{encoded_player}"
+		player_cache_key = f"supercell:coc:player:{player_tag}".lower()
+		try:
+			player_obj, _, _ = await api_cache.get_or_set_with_meta(
+				key=player_cache_key,
+				ttl_seconds=TTL_SUPERCELL_SECONDS,
+				factory=lambda: _bearer_get_json_with_proxy_fallback(
+					label="Clash of Clans",
+					token=token,
+					path=player_path,
+					primary_base_url=coc_base_url,
+					proxy_base_url=coc_proxy_url,
+				),
+			)
+			player_payload, _ = _unwrap_payload_with_proxy(player_obj)
+			clan_obj = player_payload.get("clan")
+			if isinstance(clan_obj, dict):
+				clan_tag = (clan_obj.get("tag") or "").strip()
+				return _normalize_tag(clan_tag)
+			return ""
+		except Exception:
+			return ""
+
+	async def _stats_coc_clan(ctx: commands.Context, pseudo: str) -> None:
+		token = os.getenv("COC_API_TOKEN", "").strip()
+		if not token:
+			await ctx.send(
+				"Pour Clash of Clans (clan), il faut un token officiel Supercell + IP whitelistée. "
+				"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats cocclan #TAG`."
+			)
+			return
+		coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
+		coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
+		tag = await _resolve_coc_clan_tag(ctx, pseudo)
+		if not tag:
+			await ctx.send(
+				"Tag clan manquant. Exemple: `!stats cocclan #8QGQYV` (avec le #). "
+				"Tu peux aussi l’enregistrer avec `!id cocclan #TAG` (ou enregistrer ton village `!id coc #TAG` pour déduire le clan)."
+			)
+			return
+		encoded = quote(tag, safe="")
+		path = f"clans/{encoded}"
+		cache_key = f"supercell:coc:clan:{tag}".lower()
+		try:
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_SUPERCELL_SECONDS,
+				factory=lambda: _bearer_get_json_with_proxy_fallback(
+					label="Clash of Clans",
+					token=token,
+					path=path,
+					primary_base_url=coc_base_url,
+					proxy_base_url=coc_proxy_url,
+				),
+			)
+			payload, used_proxy = _unwrap_payload_with_proxy(payload_obj)
+			name = payload.get("name") or tag
+			level = payload.get("clanLevel")
+			members = payload.get("members")
+			points = payload.get("clanPoints")
+			req = payload.get("requiredTrophies")
+			clan_type = payload.get("type")
+			location = (payload.get("location") or {}).get("name") if isinstance(payload.get("location"), dict) else None
+			war_league = (payload.get("warLeague") or {}).get("name") if isinstance(payload.get("warLeague"), dict) else None
+			war_wins = payload.get("warWins")
+			war_win_streak = payload.get("warWinStreak")
+			embed = discord.Embed(
+				title="Clash of Clans — Clan",
+				description=f"**{name}** ({tag})",
+				color=discord.Color.blurple(),
+			)
+			embed.add_field(name="Niveau", value=str(level) if level is not None else "?", inline=True)
+			embed.add_field(name="Membres", value=str(members) if members is not None else "?", inline=True)
+			embed.add_field(name="Points", value=str(points) if points is not None else "?", inline=True)
+			embed.add_field(name="Req. trophées", value=str(req) if req is not None else "?", inline=True)
+			embed.add_field(name="Type", value=str(clan_type) if clan_type else "?", inline=True)
+			embed.add_field(name="Localisation", value=str(location) if location else "?", inline=True)
+			if war_league:
+				embed.add_field(name="War league", value=str(war_league), inline=True)
+			if war_wins is not None or war_win_streak is not None:
+				embed.add_field(
+					name="Guerres",
+					value=f"Wins: {war_wins if war_wins is not None else '?'} • Streak: {war_win_streak if war_win_streak is not None else '?'}",
+					inline=True,
+				)
+			footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+			if used_proxy:
+				footer = f"{footer} • Proxy RoyaleAPI"
+			embed.set_footer(text=footer)
+			await ctx.send(embed=embed)
+		except SupercellHttpError as e:
+			print(f"CoC clan HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send(
+					"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
+					"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
+				)
+			elif e.status == 404:
+				await ctx.send("Clan introuvable. Vérifie le tag (avec le #).")
+			elif e.status == 429:
+				await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+			else:
+				await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+		except Exception as e:
+			print(f"CoC clan error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les infos du clan Clash of Clans.")
+
+	async def _stats_brawl(ctx: commands.Context, pseudo: str) -> None:
+		token = os.getenv("BRAWLSTARS_API_TOKEN", "").strip()
+		if not token:
+			await ctx.send(
+				"Pour Brawl Stars, il faut un token officiel Supercell + IP whitelistée. "
+				"Ajoute `BRAWLSTARS_API_TOKEN` dans ton `.env`, puis utilise: `!stats brawl #TAG`."
+			)
+			return
+		bs_base_url = os.getenv("BRAWLSTARS_API_BASE_URL", "https://api.brawlstars.com/v1").strip() or "https://api.brawlstars.com/v1"
+		bs_proxy_url = os.getenv("BRAWLSTARS_PROXY_BASE_URL", "https://bsproxy.royaleapi.dev/v1").strip() or "https://bsproxy.royaleapi.dev/v1"
+		tag_raw = (pseudo or "").strip()
+		if not tag_raw:
+			entry = await user_ids.get(ctx.author.id)
+			tag_raw = (entry.get("brawl") or "").strip()
+		if not tag_raw:
+			await ctx.send("Tag manquant. Exemple: `!stats brawl #2PP` (avec le #) ou enregistre-le avec `!id brawl #2PP`.")
+			return
+		tag = _normalize_tag(tag_raw)
+		encoded = quote(tag, safe="")
+		path = f"players/{encoded}"
+		cache_key = f"supercell:brawlstars:player:{tag}".lower()
+		try:
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_SUPERCELL_SECONDS,
+				factory=lambda: _bearer_get_json_with_proxy_fallback(
+					label="Brawl Stars",
+					token=token,
+					path=path,
+					primary_base_url=bs_base_url,
+					proxy_base_url=bs_proxy_url,
+				),
+			)
+			payload, used_proxy = _unwrap_payload_with_proxy(payload_obj)
+			name = payload.get("name") or tag
+			trophies = payload.get("trophies")
+			best = payload.get("highestTrophies")
+			exp = payload.get("expLevel")
+			club = (payload.get("club") or {}).get("name") if isinstance(payload.get("club"), dict) else None
+			embed = discord.Embed(
+				title="Brawl Stars — Joueur",
+				description=f"**{name}** ({tag})",
+				color=discord.Color.blurple(),
+			)
+			embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+			embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+			embed.add_field(name="Niveau", value=str(exp) if exp is not None else "?", inline=True)
+			embed.add_field(name="Club", value=str(club) if club else "Aucun", inline=True)
+			footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+			if used_proxy:
+				footer = f"{footer} • Proxy RoyaleAPI"
+			embed.set_footer(text=footer)
+			await ctx.send(embed=embed)
+		except SupercellHttpError as e:
+			print(f"BrawlStars HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send(
+					"Accès refusé (401/403). Vérifie `BRAWLSTARS_API_TOKEN` et/ou l’IP whitelistée. "
+					"(Le bot peut aussi passer par le proxy RoyaleAPI: `BRAWLSTARS_PROXY_BASE_URL`.)"
+				)
+			elif e.status == 404:
+				await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+			elif e.status == 429:
+				await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+			else:
+				await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+		except Exception as e:
+			print(f"BrawlStars error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les infos Brawl Stars.")
+
+	async def _stats_clash_royale(ctx: commands.Context, pseudo: str) -> None:
+		token = os.getenv("CLASHROYALE_API_TOKEN", "").strip()
+		if not token:
+			await ctx.send(
+				"Pour Clash Royale, il faut un token API. "
+				"Ajoute `CLASHROYALE_API_TOKEN` dans ton `.env`, puis utilise: `!stats cr #TAG`."
+			)
+			return
+		cr_base_url = os.getenv("CLASHROYALE_API_BASE_URL", "https://api.clashroyale.com/v1").strip() or "https://api.clashroyale.com/v1"
+		cr_proxy_url = os.getenv("CLASHROYALE_PROXY_BASE_URL", "https://proxy.royaleapi.dev/v1").strip() or "https://proxy.royaleapi.dev/v1"
+		tag_raw = (pseudo or "").strip()
+		if not tag_raw:
+			await ctx.send("Tag manquant. Exemple: `!stats cr #2PP` (avec le #).")
+			return
+		tag = _normalize_tag(tag_raw)
+		encoded = quote(tag, safe="")
+		path = f"players/{encoded}"
+		cache_key = f"clashroyale:player:{tag}".lower()
+		try:
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_SUPERCELL_SECONDS,
+				factory=lambda: _bearer_get_json_with_proxy_fallback(
+					label="Clash Royale",
+					token=token,
+					path=path,
+					primary_base_url=cr_base_url,
+					proxy_base_url=cr_proxy_url,
+				),
+			)
+			payload, used_proxy = _unwrap_payload_with_proxy(payload_obj)
+			name = payload.get("name") or tag
+			trophies = payload.get("trophies")
+			best = payload.get("bestTrophies")
+			arena = (payload.get("arena") or {}).get("name") if isinstance(payload.get("arena"), dict) else None
+			clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
+			embed = discord.Embed(
+				title="Clash Royale — Joueur",
+				description=f"**{name}** ({tag})",
+				color=discord.Color.blurple(),
+			)
+			embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+			embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+			embed.add_field(name="Arène", value=str(arena) if arena else "?", inline=True)
+			embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
+			footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+			if used_proxy:
+				footer = f"{footer} • Proxy RoyaleAPI"
+			embed.set_footer(text=footer)
+			await ctx.send(embed=embed)
+		except SupercellHttpError as e:
+			print(f"ClashRoyale HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send(
+					"Accès refusé (401/403). Vérifie `CLASHROYALE_API_TOKEN` et/ou l’IP whitelistée. "
+					"(Le bot peut aussi passer par le proxy RoyaleAPI: `CLASHROYALE_PROXY_BASE_URL`.)"
+				)
+			elif e.status == 404:
+				await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+			elif e.status == 429:
+				await ctx.send("Rate limit (429). Réessaye dans quelques secondes.")
+			else:
+				await ctx.send(f"Erreur Clash Royale HTTP {e.status}. Check les logs.")
+		except Exception as e:
+			print(f"ClashRoyale error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les infos Clash Royale.")
+
+	async def _stats_trn(ctx: commands.Context, *, game_slug: str, title: str, platform_env: str, profile_url_base: str, pseudo: str) -> None:
+		api_key = os.getenv("TRN_API_KEY", "").strip()
+		if not api_key:
+			await ctx.send(f"TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats {game_slug}`.")
+			return
+		if not _looks_like_trn_app_id(api_key):
+			await ctx.send(
+				"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
+				"Dans la doc TRN, la valeur attendue est l’App ID (format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)."
+			)
+		platform_default = os.getenv(platform_env, "steam").strip() or "steam"
+		pseudo_effective = (pseudo or "").strip()
+		if not pseudo_effective:
+			entry = await user_ids.get(ctx.author.id)
+			pseudo_effective = (entry.get("steam") or "").strip()
+			if not pseudo_effective:
+				await ctx.send(
+					"Pseudo Steam manquant. Enregistre-le avec `!id steam <ton_steam>` "
+					f"ou passe-le en argument : `!stats {game_slug} <steam>`."
+				)
+				return
+		platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
+		try:
+			cache_key = f"trn:{game_slug}:{platform}:{identifier}".lower()
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_TRN_SECONDS,
+				factory=lambda: _trn_get_profile(
+					api_key=api_key,
+					game_slug=game_slug,
+					platform=platform,
+					identifier=identifier,
+				),
+			)
+			payload = payload_obj  # type: ignore[assignment]
+			embed = _trn_build_embed(
+				title=title,
+				payload=payload,  # type: ignore[arg-type]
+				profile_url=f"{profile_url_base}/{platform}/{quote(identifier, safe='')}"
+			)
+			embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_TRN_SECONDS))
+			await ctx.send(embed=embed)
+		except TrnHttpError as e:
+			print(f"TRN {game_slug} HTTP {e.status}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
+			elif e.status == 404:
+				await ctx.send("Profil introuvable sur TRN. Essaie `steam:Pseudo` ou une autre plateforme.")
+			elif e.status == 429:
+				await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
+			else:
+				await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
+		except Exception as e:
+			print(f"TRN {game_slug} error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send(f"Impossible de récupérer les stats {game_slug} (TRN). Check les logs du bot.")
+
+	async def _rl_tournaments(ctx: commands.Context, *, rapid_key: str, rapid_host: str) -> None:
+		try:
+			url = f"https://{rapid_host}/tournaments/europe"
+			print(f"RapidAPI RL Tournaments GET {url}", flush=True)
+			cache_key = "rapidapi:rl:tournaments:europe".lower()
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_RL_SECONDS,
+				factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+			)
+			payload = payload_obj  # type: ignore[assignment]
+			print(
+				f"RapidAPI RL Tournaments payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}",
+				flush=True,
+			)
+			embed = discord.Embed(title="Rocket League — Tournois Europe", color=discord.Color.blurple())
+			embed.set_footer(
+				text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS)
+			)
+
+			if isinstance(payload, dict):
+				tournaments = payload.get("tournaments", [])
+				if isinstance(tournaments, list) and tournaments:
+					for i, tournament in enumerate(tournaments[:12]):
+						if not isinstance(tournament, dict):
+							continue
+						players = tournament.get("players", "?")
+						starts_iso = tournament.get("starts", "")
+						mode = tournament.get("mode", "Standard")
+						try:
+							dt = datetime.fromisoformat(str(starts_iso).replace("Z", "+00:00"))
+							date_str = dt.strftime("%d/%m/%Y %H:%M UTC")
+						except Exception:
+							date_str = str(starts_iso) if starts_iso else "Date inconnue"
+						embed.add_field(
+							name=f"🏆 Tournoi {i + 1}",
+							value=f"**Mode:** {mode}\n**Joueurs:** {players}v{players}\n**Début:** {date_str}",
+							inline=True,
+						)
+				else:
+					embed.description = "Aucun tournoi disponible."
+
+			if len(embed.fields) == 0 and isinstance(payload, dict):
+				embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
+				for k, v in _pick_scalar_stats(payload, limit=10):
+					leaf = k.rsplit(".", 1)[-1]
+					embed.add_field(name=leaf, value=str(v)[:100], inline=True)
+
+			await ctx.send(embed=embed)
+		except RapidApiHttpError as e:
+			print(f"RapidAPI RL Tournaments HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
+			elif e.status == 404:
+				await ctx.send("Endpoint tournaments introuvable (404).")
+			elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+				await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
+			else:
+				await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
+		except Exception as e:
+			print(f"RapidAPI RL Tournaments error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer les tournois Rocket League.")
+
+	async def _rl_shop(ctx: commands.Context, *, rapid_key: str, rapid_host: str) -> None:
+		try:
+			url = f"https://{rapid_host}/shops/featured"
+			print(f"RapidAPI RL Shop GET {url}", flush=True)
+			cache_key = "rapidapi:rl:shop:featured".lower()
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_RL_SECONDS,
+				factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+			)
+			payload = payload_obj  # type: ignore[assignment]
+			print(
+				f"RapidAPI RL Shop payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}",
+				flush=True,
+			)
+			embed = discord.Embed(title="Rocket League — Shop Featured", color=discord.Color.blurple())
+			embed.set_footer(
+				text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS)
+			)
+			if isinstance(payload, dict):
+				items = payload.get("items") or payload.get("featured") or payload.get("data") or payload
+				if isinstance(items, list):
+					for i, item in enumerate(items[:15]):
+						if not isinstance(item, dict):
+							continue
+						name = item.get("name") or item.get("title") or f"Item {i + 1}"
+						price = item.get("price") or item.get("cost") or "?"
+						rarity = item.get("rarity") or ""
+						value_text = f"Prix: {price}"
+						if rarity:
+							value_text += f" • {rarity}"
+						embed.add_field(name=str(name), value=value_text, inline=True)
+				if len(embed.fields) == 0:
+					embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
+					for k, v in _pick_scalar_stats(payload, limit=10):
+						leaf = k.rsplit(".", 1)[-1]
+						embed.add_field(name=leaf, value=str(v)[:100], inline=True)
+			await ctx.send(embed=embed)
+		except RapidApiHttpError as e:
+			print(f"RapidAPI RL Shop HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
+			elif e.status == 404:
+				await ctx.send("Endpoint shop introuvable (404).")
+			elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+				await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
+			elif e.status == 500:
+				await ctx.send("Erreur serveur RapidAPI (500). L'API du shop peut être temporairement indisponible.")
+			else:
+				await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
+		except Exception as e:
+			print(f"RapidAPI RL Shop error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send("Impossible de récupérer le shop Rocket League.")
+
+	async def _rl_player(ctx: commands.Context, *, rapid_key: str, rapid_host: str, pseudo: str) -> None:
+		url_tmpl = os.getenv("RL_RAPIDAPI_URL_TEMPLATE", "").strip()
+		if not url_tmpl:
+			await ctx.send(
+				"Il manque `RL_RAPIDAPI_URL_TEMPLATE` pour les stats de joueur. "
+				"Voir README/.env.example."
+			)
+			return
+
+		platform_default = os.getenv("RL_PLATFORM", "steam").strip() or "steam"
+		pseudo_effective = (pseudo or "").strip()
+		if not pseudo_effective:
+			entry = await user_ids.get(ctx.author.id)
+			pseudo_effective = (entry.get("epic") or "").strip()
+			if not pseudo_effective:
+				await ctx.send(
+					"Pseudo Epic manquant. Enregistre-le avec `!id epic <ton_epic>` "
+					"ou passe-le en argument : `!stats rocketleague <epic>`."
+				)
+				return
+		platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
+		identifier_norm = identifier.strip()
+		if rapid_host == "rocket-league1.p.rapidapi.com":
+			identifier_norm = identifier_norm.lower()
+
+		url_path_or_full = url_tmpl.format(
+			platform=quote(platform, safe=""),
+			identifier=quote(identifier_norm, safe=""),
+			player=quote(identifier_norm, safe=""),
+		)
+		url = f"https://{rapid_host}{url_path_or_full}" if url_path_or_full.startswith("/") else url_path_or_full
+
+		try:
+			print(f"RapidAPI RL GET {url}", flush=True)
+			cache_key = f"rapidapi:rl:{rapid_host}:{url}".lower()
+			payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+				key=cache_key,
+				ttl_seconds=TTL_RL_SECONDS,
+				factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
+			)
+			payload = payload_obj  # type: ignore[assignment]
+			embed = discord.Embed(
+				title="Rocket League — RapidAPI",
+				description=f"Joueur: `{identifier_norm}`",
+				color=discord.Color.blurple(),
+			)
+			embed.set_footer(
+				text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS)
+			)
+			if rapid_host == "rocket-league1.p.rapidapi.com" and platform not in {"epic", "egs"}:
+				embed.add_field(
+					name="Note",
+					value=(
+						"Cette API attend un Epic account id ou display name. "
+						"La plateforme `steam:` est ignorée. Astuce: utilise `epic:<ton_pseudo>`"
+					),
+					inline=False,
+				)
+
+			parsed = False
+			if isinstance(payload, dict):
+				ranks = payload.get("ranks")
+				if isinstance(ranks, list) and ranks:
+					for item in ranks[:6]:
+						if not isinstance(item, dict):
+							continue
+						playlist = item.get("playlist") or "Unknown"
+						rank_name = item.get("rank") or "?"
+						division = item.get("division")
+						mmr = item.get("mmr")
+						streak = item.get("streak")
+						value_text = f"{rank_name}"
+						if division is not None:
+							value_text += f" • Div {division}"
+						if mmr is not None:
+							value_text += f" • MMR {mmr}"
+						if streak is not None:
+							value_text += f" • Streak {streak}"
+						embed.add_field(name=str(playlist), value=value_text, inline=True)
+					parsed = parsed or (len(embed.fields) > 0)
+				reward = payload.get("reward")
+				if isinstance(reward, dict):
+					level = reward.get("level")
+					progress = reward.get("progress")
+					embed.add_field(
+						name="Reward",
+						value=f"Level: {level or '?'} • Progress: {progress if progress is not None else '?'}",
+						inline=False,
+					)
+					parsed = True
+
+			if not parsed:
+				for k, v in _pick_scalar_stats(payload, limit=6):
+					leaf = k.rsplit(".", 1)[-1]
+					embed.add_field(name=leaf, value=v, inline=True)
+				if len(embed.fields) == 0:
+					embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
+
+			print(
+				f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}",
+				flush=True,
+			)
+			await ctx.send(embed=embed)
+		except RapidApiHttpError as e:
+			print(f"RapidAPI RocketLeague HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+			if e.status in {401, 403}:
+				await ctx.send(
+					"RapidAPI refuse l’accès (401/403). Vérifie `RAPIDAPI_KEY` et que l’API est bien active sur ton compte."
+				)
+			elif e.status == 404:
+				await ctx.send(
+					"Endpoint introuvable (404). Vérifie `RL_RAPIDAPI_URL_TEMPLATE` (pour rocket-league1: `/ranks/{identifier}`)."
+				)
+			elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
+				await ctx.send(
+					"Quota journalier RapidAPI dépassé. Réessaye demain. (Les stats sont en cache 24h si déjà demandées.)"
+				)
+			elif e.status == 502 and isinstance(e.payload, dict) and "empty json" in str(e.payload.get("message", "")).lower():
+				await ctx.send(
+					"Joueur introuvable sur l’API Rocket League (RapidAPI). Vérifie le display name/id Epic ou essaye une autre graphie."
+				)
+			else:
+				await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
+		except Exception as e:
+			print(f"RapidAPI RocketLeague error: {type(e).__name__}: {e}", flush=True)
+			await ctx.send(
+				"Impossible de récupérer les stats Rocket League (RapidAPI). "
+				"Check les logs du bot (journalctl) pour le détail."
+			)
+
+	async def _stats_rocket_league(ctx: commands.Context, pseudo: str) -> None:
+		rapid_key = os.getenv("RAPIDAPI_KEY", "").strip()
+		rapid_host = os.getenv("RL_RAPIDAPI_HOST", "").strip()
+		if not rapid_key or not rapid_host:
+			await ctx.send(
+				"Rocket League est configuré via RapidAPI. Il manque une variable d'env: "
+				"`RAPIDAPI_KEY` ou `RL_RAPIDAPI_HOST`. "
+				"Voir README/.env.example."
+			)
+			return
+		pseudo_lower = (pseudo or "").strip().lower()
+		if pseudo_lower == "tournaments":
+			await _rl_tournaments(ctx, rapid_key=rapid_key, rapid_host=rapid_host)
+			return
+		if pseudo_lower == "shop":
+			await _rl_shop(ctx, rapid_key=rapid_key, rapid_host=rapid_host)
+			return
+		await _rl_player(ctx, rapid_key=rapid_key, rapid_host=rapid_host, pseudo=pseudo)
+
+	async def _dispatch_stats(ctx: commands.Context, game_key: str, pseudo: str) -> bool:
+		alias_to_canonical = {
+			"minecraft": "minecraft",
+			"mc": "minecraft",
+			"ark": "ark",
+			"satisfactory": "satisfactory",
+			"sat": "satisfactory",
+			"satis": "satisfactory",
+			"lethalcompany": "lethalcompany",
+			"lethal company": "lethalcompany",
+			"lethal": "lethalcompany",
+			"clashofclans": "coc",
+			"clash": "coc",
+			"coc": "coc",
+			"cocclan": "cocclan",
+			"coc_clan": "cocclan",
+			"coc-clan": "cocclan",
+			"clan": "cocclan",
+			"brawlstars": "brawl",
+			"brawl": "brawl",
+			"bs": "brawl",
+			"clashroyale": "clashroyale",
+			"clash royale": "clashroyale",
+			"cr": "clashroyale",
+			"smite2": "smite2",
+			"smite 2": "smite2",
+			"smite_2": "smite2",
+			"smite1": "smite1",
+			"smite 1": "smite1",
+			"smite_1": "smite1",
+			"smite": "smite1",
+			"rocketleague": "rocketleague",
+			"rocket": "rocketleague",
+			"rl": "rocketleague",
+		}
+		canonical = alias_to_canonical.get(game_key, "")
+		if not canonical:
+			return False
+		if canonical == "minecraft":
+			await _stats_minecraft(ctx)
+			return True
+		if canonical == "ark":
+			await _stats_ark(ctx)
+			return True
+		if canonical == "satisfactory":
+			await _stats_satisfactory(ctx)
+			return True
+		if canonical == "lethalcompany":
+			await _stats_lethal_company(ctx)
+			return True
+		if canonical == "coc":
+			await _stats_coc_player(ctx, pseudo)
+			return True
+		if canonical == "cocclan":
+			await _stats_coc_clan(ctx, pseudo)
+			return True
+		if canonical == "brawl":
+			await _stats_brawl(ctx, pseudo)
+			return True
+		if canonical == "clashroyale":
+			await _stats_clash_royale(ctx, pseudo)
+			return True
+		if canonical == "smite2":
+			await _stats_trn(
+				ctx,
+				game_slug="smite2",
+				title="TRN — Smite 2",
+				platform_env="TRN_SMITE2_PLATFORM",
+				profile_url_base="https://tracker.gg/smite2/profile",
+				pseudo=pseudo,
+			)
+			return True
+		if canonical == "smite1":
+			await _stats_trn(
+				ctx,
+				game_slug="smite",
+				title="TRN — Smite",
+				platform_env="TRN_SMITE1_PLATFORM",
+				profile_url_base="https://tracker.gg/smite/profile",
+				pseudo=pseudo,
+			)
+			return True
+		if canonical == "rocketleague":
+			await _stats_rocket_league(ctx, pseudo)
+			return True
+		return False
+
 	@bot.command(name="stats")
 	async def stats(ctx: commands.Context, game: Optional[str] = None, *, pseudo: str = "") -> None:
 		if not game:
@@ -1270,850 +2106,9 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			return
 
 		game_key = game.strip().lower()
-
-		if game_key in {"minecraft", "mc"}:
-			try:
-				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key="minecraft_status",
-					ttl_seconds=TTL_MINECRAFT_SECONDS,
-					factory=_mc_status_text,
-				)
-				text = str(text_obj)
-				await ctx.send(
-					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_MINECRAFT_SECONDS)}"
-				)
-			except Exception as e:
-				await ctx.send(
-					"Impossible de récupérer le status Minecraft. "
-					"Vérifie `MINECRAFT_SERVER` (souvent `:25565`). "
-					"Attention: `8123` est fréquemment le port Dynmap (web), pas le port Minecraft."
-				)
-				print(f"Minecraft status error: {type(e).__name__}: {e}", flush=True)
-			return
-
-		if game_key in {"ark"}:
-			try:
-				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key="ark_etst1_status",
-					ttl_seconds=TTL_ARK_SECONDS,
-					factory=_ark_status_text_etst1,
-				)
-				text = str(text_obj)
-				await ctx.send(
-					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_ARK_SECONDS)}"
-				)
-			except Exception as e:
-				await ctx.send(
-					"Impossible de récupérer le status ARK. "
-					"Vérifie `ARK_ETST1_SERVER` (IP:port du port *query* Steam/A2S)."
-				)
-				print(f"ARK status error: {type(e).__name__}: {e}", flush=True)
-			return
-
-		if game_key in {"satisfactory", "sat", "satis"}:
-			try:
-				text_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key="satisfactory_status",
-					ttl_seconds=TTL_SATISFACTORY_SECONDS,
-					factory=_satisfactory_status_text,
-				)
-				text = str(text_obj)
-				await ctx.send(
-					f"{text}\n{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SATISFACTORY_SECONDS)}"
-				)
-			except Exception as e:
-				await ctx.send(
-					"Impossible de récupérer le status Satisfactory. "
-					"Vérifie `SATISFACTORY_SERVER` (IP:port query). Port attendu: `8888`."
-				)
-				print(f"Satisfactory status error: {type(e).__name__}: {e}", flush=True)
-			return
-
-		if game_key in {"lethalcompany", "lethal company", "lethal"}:
-			try:
-				count_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key="steam:current_players:1966720",
-					ttl_seconds=TTL_STEAM_SECONDS,
-					factory=lambda: _steam_current_players(appid=1966720),
-				)
-				count = int(count_obj) if isinstance(count_obj, (int, float, str)) else 0
-				await ctx.send(
-					f"Lethal Company — joueurs en ligne (Steam): **{count}**\n"
-					f"{_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_STEAM_SECONDS)}"
-				)
-			except Exception as e:
-				print(f"Steam current players error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les joueurs en ligne via Steam.")
-			return
-
-		if game_key in {"clashofclans", "clash", "coc"}:
-			token = os.getenv("COC_API_TOKEN", "").strip()
-			if not token:
-				await ctx.send(
-					"Pour Clash of Clans, il faut un token officiel Supercell + IP whitelistée. "
-					"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats coc #TAG`."
-				)
-				return
-			coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
-			coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
-			tag_raw = pseudo.strip()
-			if not tag_raw:
-				entry = await user_ids.get(ctx.author.id)
-				tag_raw = (entry.get("coc") or "").strip()
-			if not tag_raw:
-				await ctx.send("Tag manquant. Exemple: `!stats coc #2PP` (avec le #) ou enregistre-le avec `!id coc #2PP`.")
-				return
-			tag = tag_raw.upper()
-			if not tag.startswith("#"):
-				tag = f"#{tag}"
-			encoded = quote(tag, safe="")
-			path = f"players/{encoded}"
-			cache_key = f"supercell:coc:player:{tag}".lower()
-			try:
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _bearer_get_json_with_proxy_fallback(
-						label="Clash of Clans",
-						token=token,
-						path=path,
-						primary_base_url=coc_base_url,
-						proxy_base_url=coc_proxy_url,
-					),
-				)
-				payload: dict
-				used_proxy = False
-				if (
-					isinstance(payload_obj, tuple)
-					and len(payload_obj) == 2
-					and isinstance(payload_obj[0], dict)
-					and isinstance(payload_obj[1], bool)
-				):
-					payload, used_proxy = payload_obj
-				else:
-					payload = payload_obj if isinstance(payload_obj, dict) else {}
-				name = payload.get("name") or tag
-				th = payload.get("townHallLevel")
-				trophies = payload.get("trophies")
-				best = payload.get("bestTrophies")
-				war_stars = payload.get("warStars")
-				clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
-				embed = discord.Embed(
-					title="Clash of Clans — Joueur",
-					description=f"**{name}** ({tag})",
-					color=discord.Color.blurple(),
-				)
-				embed.add_field(name="HDV", value=str(th) if th is not None else "?", inline=True)
-				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
-				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
-				embed.add_field(name="War stars", value=str(war_stars) if war_stars is not None else "?", inline=True)
-				embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
-				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				if used_proxy:
-					footer = f"{footer} • Proxy RoyaleAPI"
-				embed.set_footer(text=footer)
-				await ctx.send(embed=embed)
-			except SupercellHttpError as e:
-				print(f"CoC HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send(
-						"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
-						"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
-					)
-				elif e.status == 404:
-					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
-				elif e.status == 429:
-					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
-			except Exception as e:
-				print(f"CoC error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les infos Clash of Clans.")
-			return
-
-		if game_key in {"cocclan", "coc_clan", "coc-clan", "clan"}:
-			token = os.getenv("COC_API_TOKEN", "").strip()
-			if not token:
-				await ctx.send(
-					"Pour Clash of Clans (clan), il faut un token officiel Supercell + IP whitelistée. "
-					"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats cocclan #TAG`."
-				)
-				return
-			coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
-			coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
-			tag_raw = pseudo.strip()
-			if not tag_raw:
-				entry = await user_ids.get(ctx.author.id)
-				tag_raw = (entry.get("cocclan") or "").strip()
-			if not tag_raw:
-				# Try deriving clan tag from saved CoC player tag
-				entry = await user_ids.get(ctx.author.id)
-				player_tag_raw = (entry.get("coc") or "").strip()
-				if player_tag_raw:
-					player_tag = player_tag_raw.upper()
-					if not player_tag.startswith("#"):
-						player_tag = f"#{player_tag}"
-					encoded_player = quote(player_tag, safe="")
-					player_path = f"players/{encoded_player}"
-					player_cache_key = f"supercell:coc:player:{player_tag}".lower()
-					try:
-						player_obj, _, _ = await api_cache.get_or_set_with_meta(
-							key=player_cache_key,
-							ttl_seconds=TTL_SUPERCELL_SECONDS,
-							factory=lambda: _bearer_get_json_with_proxy_fallback(
-								label="Clash of Clans",
-								token=token,
-								path=player_path,
-								primary_base_url=coc_base_url,
-								proxy_base_url=coc_proxy_url,
-							),
-						)
-						player_payload = {}
-						if (
-							isinstance(player_obj, tuple)
-							and len(player_obj) == 2
-							and isinstance(player_obj[0], dict)
-						):
-							player_payload = player_obj[0]
-						elif isinstance(player_obj, dict):
-							player_payload = player_obj
-						clan_tag = None
-						clan_obj = player_payload.get("clan")
-						if isinstance(clan_obj, dict):
-							clan_tag = (clan_obj.get("tag") or "").strip()
-						if clan_tag:
-							tag_raw = clan_tag
-					except Exception:
-						pass
-			if not tag_raw:
-				await ctx.send(
-					"Tag clan manquant. Exemple: `!stats cocclan #8QGQYV` (avec le #). "
-					"Tu peux aussi l’enregistrer avec `!id cocclan #TAG` (ou enregistrer ton village `!id coc #TAG` pour déduire le clan)."
-				)
-				return
-			tag = tag_raw.upper()
-			if not tag.startswith("#"):
-				tag = f"#{tag}"
-			encoded = quote(tag, safe="")
-			path = f"clans/{encoded}"
-			cache_key = f"supercell:coc:clan:{tag}".lower()
-			try:
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _bearer_get_json_with_proxy_fallback(
-						label="Clash of Clans",
-						token=token,
-						path=path,
-						primary_base_url=coc_base_url,
-						proxy_base_url=coc_proxy_url,
-					),
-				)
-				payload: dict
-				used_proxy = False
-				if (
-					isinstance(payload_obj, tuple)
-					and len(payload_obj) == 2
-					and isinstance(payload_obj[0], dict)
-					and isinstance(payload_obj[1], bool)
-				):
-					payload, used_proxy = payload_obj
-				else:
-					payload = payload_obj if isinstance(payload_obj, dict) else {}
-				name = payload.get("name") or tag
-				level = payload.get("clanLevel")
-				members = payload.get("members")
-				points = payload.get("clanPoints")
-				req = payload.get("requiredTrophies")
-				clan_type = payload.get("type")
-				location = (payload.get("location") or {}).get("name") if isinstance(payload.get("location"), dict) else None
-				war_league = (payload.get("warLeague") or {}).get("name") if isinstance(payload.get("warLeague"), dict) else None
-				war_wins = payload.get("warWins")
-				war_win_streak = payload.get("warWinStreak")
-				embed = discord.Embed(
-					title="Clash of Clans — Clan",
-					description=f"**{name}** ({tag})",
-					color=discord.Color.blurple(),
-				)
-				embed.add_field(name="Niveau", value=str(level) if level is not None else "?", inline=True)
-				embed.add_field(name="Membres", value=str(members) if members is not None else "?", inline=True)
-				embed.add_field(name="Points", value=str(points) if points is not None else "?", inline=True)
-				embed.add_field(name="Req. trophées", value=str(req) if req is not None else "?", inline=True)
-				embed.add_field(name="Type", value=str(clan_type) if clan_type else "?", inline=True)
-				embed.add_field(name="Localisation", value=str(location) if location else "?", inline=True)
-				if war_league:
-					embed.add_field(name="War league", value=str(war_league), inline=True)
-				if war_wins is not None or war_win_streak is not None:
-					embed.add_field(
-						name="Guerres",
-						value=f"Wins: {war_wins if war_wins is not None else '?'} • Streak: {war_win_streak if war_win_streak is not None else '?'}",
-						inline=True,
-					)
-				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				if used_proxy:
-					footer = f"{footer} • Proxy RoyaleAPI"
-				embed.set_footer(text=footer)
-				await ctx.send(embed=embed)
-			except SupercellHttpError as e:
-				print(f"CoC clan HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send(
-						"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
-						"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
-					)
-				elif e.status == 404:
-					await ctx.send("Clan introuvable. Vérifie le tag (avec le #).")
-				elif e.status == 429:
-					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
-			except Exception as e:
-				print(f"CoC clan error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les infos du clan Clash of Clans.")
-			return
-
-		if game_key in {"brawlstars", "brawl", "bs"}:
-			token = os.getenv("BRAWLSTARS_API_TOKEN", "").strip()
-			if not token:
-				await ctx.send(
-					"Pour Brawl Stars, il faut un token officiel Supercell + IP whitelistée. "
-					"Ajoute `BRAWLSTARS_API_TOKEN` dans ton `.env`, puis utilise: `!stats brawl #TAG`."
-				)
-				return
-			bs_base_url = os.getenv("BRAWLSTARS_API_BASE_URL", "https://api.brawlstars.com/v1").strip() or "https://api.brawlstars.com/v1"
-			bs_proxy_url = os.getenv("BRAWLSTARS_PROXY_BASE_URL", "https://bsproxy.royaleapi.dev/v1").strip() or "https://bsproxy.royaleapi.dev/v1"
-			tag_raw = pseudo.strip()
-			if not tag_raw:
-				entry = await user_ids.get(ctx.author.id)
-				tag_raw = (entry.get("brawl") or "").strip()
-			if not tag_raw:
-				await ctx.send(
-					"Tag manquant. Exemple: `!stats brawl #2PP` (avec le #) ou enregistre-le avec `!id brawl #2PP`."
-				)
-				return
-			tag = tag_raw.upper()
-			if not tag.startswith("#"):
-				tag = f"#{tag}"
-			encoded = quote(tag, safe="")
-			path = f"players/{encoded}"
-			cache_key = f"supercell:brawlstars:player:{tag}".lower()
-			try:
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _bearer_get_json_with_proxy_fallback(
-						label="Brawl Stars",
-						token=token,
-						path=path,
-						primary_base_url=bs_base_url,
-						proxy_base_url=bs_proxy_url,
-					),
-				)
-				payload: dict
-				used_proxy = False
-				if (
-					isinstance(payload_obj, tuple)
-					and len(payload_obj) == 2
-					and isinstance(payload_obj[0], dict)
-					and isinstance(payload_obj[1], bool)
-				):
-					payload, used_proxy = payload_obj
-				else:
-					payload = payload_obj if isinstance(payload_obj, dict) else {}
-				name = payload.get("name") or tag
-				trophies = payload.get("trophies")
-				best = payload.get("highestTrophies")
-				exp = payload.get("expLevel")
-				club = (payload.get("club") or {}).get("name") if isinstance(payload.get("club"), dict) else None
-				embed = discord.Embed(
-					title="Brawl Stars — Joueur",
-					description=f"**{name}** ({tag})",
-					color=discord.Color.blurple(),
-				)
-				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
-				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
-				embed.add_field(name="Niveau", value=str(exp) if exp is not None else "?", inline=True)
-				embed.add_field(name="Club", value=str(club) if club else "Aucun", inline=True)
-				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				if used_proxy:
-					footer = f"{footer} • Proxy RoyaleAPI"
-				embed.set_footer(text=footer)
-				await ctx.send(embed=embed)
-			except SupercellHttpError as e:
-				print(f"BrawlStars HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send(
-						"Accès refusé (401/403). Vérifie `BRAWLSTARS_API_TOKEN` et/ou l’IP whitelistée. "
-						"(Le bot peut aussi passer par le proxy RoyaleAPI: `BRAWLSTARS_PROXY_BASE_URL`.)"
-					)
-				elif e.status == 404:
-					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
-				elif e.status == 429:
-					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
-			except Exception as e:
-				print(f"BrawlStars error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les infos Brawl Stars.")
-			return
-
-		if game_key in {"clashroyale", "clash royale", "cr"}:
-			token = os.getenv("CLASHROYALE_API_TOKEN", "").strip()
-			if not token:
-				await ctx.send(
-					"Pour Clash Royale, il faut un token API. "
-					"Ajoute `CLASHROYALE_API_TOKEN` dans ton `.env`, puis utilise: `!stats cr #TAG`."
-				)
-				return
-			cr_base_url = os.getenv("CLASHROYALE_API_BASE_URL", "https://api.clashroyale.com/v1").strip() or "https://api.clashroyale.com/v1"
-			cr_proxy_url = os.getenv("CLASHROYALE_PROXY_BASE_URL", "https://proxy.royaleapi.dev/v1").strip() or "https://proxy.royaleapi.dev/v1"
-			tag_raw = pseudo.strip()
-			if not tag_raw:
-				await ctx.send("Tag manquant. Exemple: `!stats cr #2PP` (avec le #).")
-				return
-			tag = tag_raw.upper()
-			if not tag.startswith("#"):
-				tag = f"#{tag}"
-			encoded = quote(tag, safe="")
-			path = f"players/{encoded}"
-			cache_key = f"clashroyale:player:{tag}".lower()
-			try:
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _bearer_get_json_with_proxy_fallback(
-						label="Clash Royale",
-						token=token,
-						path=path,
-						primary_base_url=cr_base_url,
-						proxy_base_url=cr_proxy_url,
-					),
-				)
-				payload: dict
-				used_proxy = False
-				if (
-					isinstance(payload_obj, tuple)
-					and len(payload_obj) == 2
-					and isinstance(payload_obj[0], dict)
-					and isinstance(payload_obj[1], bool)
-				):
-					payload, used_proxy = payload_obj
-				else:
-					payload = payload_obj if isinstance(payload_obj, dict) else {}
-				name = payload.get("name") or tag
-				trophies = payload.get("trophies")
-				best = payload.get("bestTrophies")
-				arena = (payload.get("arena") or {}).get("name") if isinstance(payload.get("arena"), dict) else None
-				clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
-				embed = discord.Embed(
-					title="Clash Royale — Joueur",
-					description=f"**{name}** ({tag})",
-					color=discord.Color.blurple(),
-				)
-				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
-				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
-				embed.add_field(name="Arène", value=str(arena) if arena else "?", inline=True)
-				embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
-				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				if used_proxy:
-					footer = f"{footer} • Proxy RoyaleAPI"
-				embed.set_footer(text=footer)
-				await ctx.send(embed=embed)
-			except SupercellHttpError as e:
-				print(f"ClashRoyale HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send(
-						"Accès refusé (401/403). Vérifie `CLASHROYALE_API_TOKEN` et/ou l’IP whitelistée. "
-						"(Le bot peut aussi passer par le proxy RoyaleAPI: `CLASHROYALE_PROXY_BASE_URL`.)"
-					)
-				elif e.status == 404:
-					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
-				elif e.status == 429:
-					await ctx.send("Rate limit (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send(f"Erreur Clash Royale HTTP {e.status}. Check les logs.")
-			except Exception as e:
-				print(f"ClashRoyale error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les infos Clash Royale.")
-			return
-
-		if game_key in {"smite2", "smite 2", "smite_2"}:
-			api_key = os.getenv("TRN_API_KEY", "").strip()
-			if not api_key:
-				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite2`.")
-				return
-			if not _looks_like_trn_app_id(api_key):
-				await ctx.send(
-					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
-					"Dans la doc TRN, la valeur attendue est l’App ID (format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)."
-				)
-			platform_default = os.getenv("TRN_SMITE2_PLATFORM", "steam").strip() or "steam"
-			pseudo_effective = pseudo.strip()
-			if not pseudo_effective:
-				entry = await user_ids.get(ctx.author.id)
-				pseudo_effective = (entry.get("steam") or "").strip()
-				if not pseudo_effective:
-					await ctx.send(
-						"Pseudo Steam manquant. Enregistre-le avec `!id steam <ton_steam>` "
-						"ou passe-le en argument : `!stats smite2 <steam>`."
-					)
-					return
-			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
-			try:
-				cache_key = f"trn:smite2:{platform}:{identifier}".lower()
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_TRN_SECONDS,
-					factory=lambda: _trn_get_profile(
-						api_key=api_key,
-						game_slug="smite2",
-						platform=platform,
-						identifier=identifier,
-					),
-				)
-				payload = payload_obj  # type: ignore[assignment]
-				embed = _trn_build_embed(
-					title="TRN — Smite 2",
-					payload=payload,  # type: ignore[arg-type]
-					profile_url=f"https://tracker.gg/smite2/profile/{platform}/{quote(identifier, safe='')}"
-				)
-				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_TRN_SECONDS))
-				await ctx.send(embed=embed)
-			except TrnHttpError as e:
-				print(f"TRN Smite2 HTTP {e.status}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
-				elif e.status == 404:
-					await ctx.send("Profil introuvable sur TRN. Essaie `steam:Pseudo` ou une autre plateforme.")
-				elif e.status == 429:
-					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
-			except Exception as e:
-				print(f"TRN Smite2 error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les stats Smite 2 (TRN). Check les logs du bot.")
-			return
-
-		if game_key in {"smite1", "smite 1", "smite_1", "smite"}:
-			api_key = os.getenv("TRN_API_KEY", "").strip()
-			if not api_key:
-				await ctx.send("TRN_API_KEY manquant: ajoute-le dans ton `.env` pour activer `!stats smite1`.")
-				return
-			if not _looks_like_trn_app_id(api_key):
-				await ctx.send(
-					"TRN_API_KEY ne ressemble pas à un App ID TRN (UUID). "
-					"Dans la doc TRN, la valeur attendue est l’App ID."
-				)
-			platform_default = os.getenv("TRN_SMITE1_PLATFORM", "steam").strip() or "steam"
-			pseudo_effective = pseudo.strip()
-			if not pseudo_effective:
-				entry = await user_ids.get(ctx.author.id)
-				pseudo_effective = (entry.get("steam") or "").strip()
-				if not pseudo_effective:
-					await ctx.send(
-						"Pseudo Steam manquant. Enregistre-le avec `!id steam <ton_steam>` "
-						"ou passe-le en argument : `!stats smite1 <steam>`."
-					)
-					return
-			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
-			try:
-				cache_key = f"trn:smite:{platform}:{identifier}".lower()
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_TRN_SECONDS,
-					factory=lambda: _trn_get_profile(
-						api_key=api_key,
-						game_slug="smite",
-						platform=platform,
-						identifier=identifier,
-					),
-				)
-				payload = payload_obj  # type: ignore[assignment]
-				embed = _trn_build_embed(
-					title="TRN — Smite",
-					payload=payload,  # type: ignore[arg-type]
-					profile_url=f"https://tracker.gg/smite/profile/{platform}/{quote(identifier, safe='')}"
-				)
-				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_TRN_SECONDS))
-				await ctx.send(embed=embed)
-			except TrnHttpError as e:
-				print(f"TRN Smite HTTP {e.status}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send("TRN refuse l’accès (401/403). Vérifie `TRN_API_KEY` (App ID TRN) et les permissions/quota.")
-				elif e.status == 404:
-					await ctx.send("Profil introuvable sur TRN. Essaie `steam:Pseudo` ou une autre plateforme.")
-				elif e.status == 429:
-					await ctx.send("Rate limit TRN (429). Réessaye dans quelques secondes.")
-				else:
-					await ctx.send("Erreur TRN inattendue. Check les logs du bot.")
-			except Exception as e:
-				print(f"TRN Smite error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send("Impossible de récupérer les stats Smite (TRN). Check les logs du bot.")
-			return
-
-		if game_key in {"rocketleague", "rocket", "rl"}:
-			rapid_key = os.getenv("RAPIDAPI_KEY", "").strip()
-			rapid_host = os.getenv("RL_RAPIDAPI_HOST", "").strip()
-			
-			if not rapid_key or not rapid_host:
-				await ctx.send(
-					"Rocket League est configuré via RapidAPI. Il manque une variable d'env: "
-					"`RAPIDAPI_KEY` ou `RL_RAPIDAPI_HOST`. "
-					"Voir README/.env.example."
-				)
-				return
-			
-			# Check for special commands: tournaments or shop
-			pseudo_lower = pseudo.strip().lower()
-			
-			# Tournaments command
-			if pseudo_lower == "tournaments":
-				try:
-					url = f"https://{rapid_host}/tournaments/europe"
-					print(f"RapidAPI RL Tournaments GET {url}", flush=True)
-					cache_key = f"rapidapi:rl:tournaments:europe".lower()
-					payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-						key=cache_key,
-						ttl_seconds=TTL_RL_SECONDS,
-						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
-					)
-					payload = payload_obj  # type: ignore[assignment]
-					print(f"RapidAPI RL Tournaments payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
-					embed = discord.Embed(
-						title="Rocket League — Tournois Europe",
-						color=discord.Color.blurple(),
-					)
-					embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
-					
-					# Parse tournaments array
-					if isinstance(payload, dict):
-						tournaments = payload.get("tournaments", [])
-						if isinstance(tournaments, list) and len(tournaments) > 0:
-							for i, tournament in enumerate(tournaments[:12]):  # Show up to 12 tournaments
-								if isinstance(tournament, dict):
-									# Parse fields: players, starts (ISO timestamp), mode
-									players = tournament.get("players", "?")
-									starts_iso = tournament.get("starts", "")
-									mode = tournament.get("mode", "Standard")
-									
-									# Format the start time from ISO timestamp
-									try:
-										dt = datetime.fromisoformat(starts_iso.replace("Z", "+00:00"))
-										# Show date and time in a readable format
-										date_str = dt.strftime("%d/%m/%Y %H:%M UTC")
-									except Exception:
-										date_str = starts_iso or "Date inconnue"
-									
-									embed.add_field(
-										name=f"🏆 Tournoi {i+1}",
-										value=f"**Mode:** {mode}\n**Joueurs:** {players}v{players}\n**Début:** {date_str}",
-										inline=True
-									)
-						else:
-							embed.description = "Aucun tournoi disponible."
-						
-						if len(embed.fields) == 0:
-							# Fallback: show raw data
-							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
-							for k, v in _pick_scalar_stats(payload, limit=10):
-								leaf = k.rsplit(".", 1)[-1]
-								embed.add_field(name=leaf, value=str(v)[:100], inline=True)
-								
-					await ctx.send(embed=embed)
-				except RapidApiHttpError as e:
-					print(f"RapidAPI RL Tournaments HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-					if e.status in {401, 403}:
-						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
-					elif e.status == 404:
-						await ctx.send("Endpoint tournaments introuvable (404).")
-					elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
-						await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
-					else:
-						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
-				except Exception as e:
-					print(f"RapidAPI RL Tournaments error: {type(e).__name__}: {e}", flush=True)
-					await ctx.send("Impossible de récupérer les tournois Rocket League.")
-				return
-			
-			# Shop command
-			if pseudo_lower == "shop":
-				try:
-					url = f"https://{rapid_host}/shops/featured"
-					print(f"RapidAPI RL Shop GET {url}", flush=True)
-					cache_key = f"rapidapi:rl:shop:featured".lower()
-					payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-						key=cache_key,
-						ttl_seconds=TTL_RL_SECONDS,
-						factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
-					)
-					payload = payload_obj  # type: ignore[assignment]
-					print(f"RapidAPI RL Shop payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
-					embed = discord.Embed(
-						title="Rocket League — Shop Featured",
-						color=discord.Color.blurple(),
-					)
-					embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
-					# Try to extract shop items from payload
-					if isinstance(payload, dict):
-						items = payload.get("items") or payload.get("featured") or payload.get("data") or payload
-						if isinstance(items, list):
-							for i, item in enumerate(items[:15]):  # Limit to 15 items
-								if isinstance(item, dict):
-									name = item.get("name") or item.get("title") or f"Item {i+1}"
-									price = item.get("price") or item.get("cost") or "?"
-									rarity = item.get("rarity") or ""
-									value_text = f"Prix: {price}"
-									if rarity:
-										value_text += f" • {rarity}"
-									embed.add_field(name=name, value=value_text, inline=True)
-						if len(embed.fields) == 0:
-							# Fallback: show raw data
-							embed.description = f"Réponse reçue. Structure: {list(payload.keys())[:10]}"
-							for k, v in _pick_scalar_stats(payload, limit=10):
-								leaf = k.rsplit(".", 1)[-1]
-								embed.add_field(name=leaf, value=str(v)[:100], inline=True)
-								
-					await ctx.send(embed=embed)
-				except RapidApiHttpError as e:
-					print(f"RapidAPI RL Shop HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-					if e.status in {401, 403}:
-						await ctx.send("RapidAPI refuse l'accès (401/403). Vérifie `RAPIDAPI_KEY`.")
-					elif e.status == 404:
-						await ctx.send("Endpoint shop introuvable (404).")
-					elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
-						await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les données sont en cache 24h.)")
-					elif e.status == 500:
-						await ctx.send("Erreur serveur RapidAPI (500). L'API du shop peut être temporairement indisponible.")
-					else:
-						await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
-				except Exception as e:
-					print(f"RapidAPI RL Shop error: {type(e).__name__}: {e}", flush=True)
-					await ctx.send("Impossible de récupérer le shop Rocket League.")
-				return
-			
-			# Normal player stats lookup
-			url_tmpl = os.getenv("RL_RAPIDAPI_URL_TEMPLATE", "").strip()
-			if not url_tmpl:
-				await ctx.send(
-					"Il manque `RL_RAPIDAPI_URL_TEMPLATE` pour les stats de joueur. "
-					"Voir README/.env.example."
-				)
-				return
-
-			platform_default = os.getenv("RL_PLATFORM", "steam").strip() or "steam"
-			pseudo_effective = pseudo.strip()
-			if not pseudo_effective:
-				entry = await user_ids.get(ctx.author.id)
-				pseudo_effective = (entry.get("epic") or "").strip()
-				if not pseudo_effective:
-					await ctx.send(
-						"Pseudo Epic manquant. Enregistre-le avec `!id epic <ton_epic>` "
-						"ou passe-le en argument : `!stats rocketleague <epic>`."
-					)
-					return
-			platform, identifier = _split_platform_identifier(pseudo_effective, platform_default)
-			# Normalize identifier case for providers that expect lowercase display names
-			identifier_norm = identifier.strip()
-			if rapid_host == "rocket-league1.p.rapidapi.com":
-				identifier_norm = identifier_norm.lower()
-
-			url_path_or_full = url_tmpl.format(
-				platform=quote(platform, safe=""),
-				identifier=quote(identifier_norm, safe=""),
-				player=quote(identifier_norm, safe=""),
-			)
-			url = (
-				f"https://{rapid_host}{url_path_or_full}"
-				if url_path_or_full.startswith("/")
-				else url_path_or_full
-			)
-
-			try:
-				print(f"RapidAPI RL GET {url}", flush=True)
-				cache_key = f"rapidapi:rl:{rapid_host}:{url}".lower()
-				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
-					key=cache_key,
-					ttl_seconds=TTL_RL_SECONDS,
-					factory=lambda: _rapidapi_get_json(url=url, api_key=rapid_key, api_host=rapid_host),
-				)
-				payload = payload_obj  # type: ignore[assignment]
-				embed = discord.Embed(
-					title="Rocket League — RapidAPI",
-					description=f"Joueur: `{identifier_norm}`",
-					color=discord.Color.blurple(),
-				)
-				embed.set_footer(text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_RL_SECONDS))
-				if rapid_host == "rocket-league1.p.rapidapi.com" and platform not in {"epic", "egs"}:
-					embed.add_field(
-						name="Note",
-						value=(
-							"Cette API attend un Epic account id ou display name. "
-							"La plateforme `steam:` est ignorée. Astuce: utilise `epic:<ton_pseudo>`"
-						),
-						inline=False,
-					)
-				# Prefer Rocket League-specific parsing when available
-				parsed = False
-				if isinstance(payload, dict):
-					ranks = payload.get("ranks")
-					if isinstance(ranks, list) and ranks:
-						for item in ranks[:6]:
-							if isinstance(item, dict):
-								playlist = item.get("playlist") or "Unknown"
-								rank_name = item.get("rank") or "?"
-								division = item.get("division")
-								mmr = item.get("mmr")
-								streak = item.get("streak")
-								value_text = f"{rank_name}"
-								if division is not None:
-									value_text += f" • Div {division}"
-								if mmr is not None:
-									value_text += f" • MMR {mmr}"
-								if streak is not None:
-									value_text += f" • Streak {streak}"
-								embed.add_field(name=str(playlist), value=value_text, inline=True)
-						parsed = parsed or (len(embed.fields) > 0)
-					reward = payload.get("reward")
-					if isinstance(reward, dict):
-						level = reward.get("level")
-						progress = reward.get("progress")
-						embed.add_field(name="Reward", value=f"Level: {level or '?'} • Progress: {progress if progress is not None else '?'}", inline=False)
-						parsed = True
-
-				# Fallback: generic scalar stats when format is unknown
-				if not parsed:
-					for k, v in _pick_scalar_stats(payload, limit=6):
-						leaf = k.rsplit(".", 1)[-1]
-						embed.add_field(name=leaf, value=v, inline=True)
-					if len(embed.fields) == 0:
-						embed.add_field(name="Info", value="Réponse reçue, mais format inconnu (voir logs).", inline=False)
-				print(f"RapidAPI RL payload keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}", flush=True)
-				await ctx.send(embed=embed)
-			except RapidApiHttpError as e:
-				print(f"RapidAPI RocketLeague HTTP {e.status} for {e.url}: {e.payload}", flush=True)
-				if e.status in {401, 403}:
-					await ctx.send(
-						"RapidAPI refuse l’accès (401/403). Vérifie `RAPIDAPI_KEY` et que l’API est bien active sur ton compte."
-					)
-				elif e.status == 404:
-					await ctx.send(
-						"Endpoint introuvable (404). Vérifie `RL_RAPIDAPI_URL_TEMPLATE` (pour rocket-league1: `/ranks/{identifier}`)."
-					)
-				elif e.status == 429 or (isinstance(e.payload, dict) and "quota" in str(e.payload).lower()):
-					await ctx.send("Quota journalier RapidAPI dépassé. Réessaye demain. (Les stats sont en cache 24h si déjà demandées.)")
-				elif e.status == 502 and isinstance(e.payload, dict) and "empty json" in str(e.payload.get("message", "")).lower():
-					await ctx.send("Joueur introuvable sur l’API Rocket League (RapidAPI). Vérifie le display name/id Epic ou essaye une autre graphie.")
-				else:
-					await ctx.send(f"Erreur RapidAPI HTTP {e.status}. Check les logs du bot.")
-			except Exception as e:
-				print(f"RapidAPI RocketLeague error: {type(e).__name__}: {e}", flush=True)
-				await ctx.send(
-					"Impossible de récupérer les stats Rocket League (RapidAPI). "
-					"Check les logs du bot (journalctl) pour le détail."
-				)
-			return
-
-		await ctx.send("Jeu non supporté pour l’instant. Priorités actuelles: smite2, minecraft, rocketleague.")
+		handled = await _dispatch_stats(ctx, game_key, pseudo)
+		if not handled:
+			await ctx.send("Jeu non supporté pour l’instant. Priorités actuelles: smite2, minecraft, rocketleague.")
 
 	return bot
 
