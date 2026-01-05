@@ -555,7 +555,7 @@ class _UserIdStore:
 
 	async def set_value(self, user_id: int, key: str, value: str) -> None:
 		key = key.strip().lower()
-		if key not in {"steam", "epic", "coc", "brawl"}:
+		if key not in {"steam", "epic", "coc", "brawl", "cocclan"}:
 			raise ValueError("Invalid key")
 		value = value.strip()
 		lock = await self._get_lock()
@@ -570,7 +570,7 @@ class _UserIdStore:
 
 	async def clear(self, user_id: int, which: str) -> None:
 		which = which.strip().lower() or "all"
-		if which not in {"steam", "epic", "coc", "brawl", "all"}:
+		if which not in {"steam", "epic", "coc", "brawl", "cocclan", "all"}:
 			raise ValueError("Invalid clear option")
 		lock = await self._get_lock()
 		async with lock:
@@ -803,7 +803,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			name="IDs — sauvegarde de pseudos",
 			value=(
 				f"`{p}id steam MonSteam` • `{p}id epic MonEpic`\n"
-				f"`{p}id coc #TAG` • `{p}id brawl #TAG` • `{p}id clear all`"
+				f"`{p}id coc #TAG` • `{p}id brawl #TAG` • `{p}id cocclan #TAG`\n"
+				f"`{p}id clear all`"
 			),
 			inline=False,
 		)
@@ -826,9 +827,14 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			action_l = (action or "").strip().lower()
 			kind_l = (kind or "").strip().lower()
 
-			# Shorthand: !id steam <value> / !id epic <value> / !id coc #TAG / !id brawl #TAG
-			if action_l in {"steam", "epic", "coc", "brawl", "bs", "brawlstars"}:
-				kind_l = "brawl" if action_l in {"bs", "brawlstars"} else action_l
+			# Shorthand: !id steam <value> / !id epic <value> / !id coc #TAG / !id brawl #TAG / !id cocclan #TAG
+			if action_l in {"steam", "epic", "coc", "brawl", "bs", "brawlstars", "cocclan", "clan"}:
+				if action_l in {"bs", "brawlstars"}:
+					kind_l = "brawl"
+				elif action_l == "clan":
+					kind_l = "cocclan"
+				else:
+					kind_l = action_l
 				action_l = "set"
 				# value is already in `kind`+`value`? In this shorthand form, `kind` is the first word after action.
 				# With signature (action, kind, *, value), shorthand gives action=steam, kind=<first token of value>.
@@ -845,27 +851,35 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				epic = (entry.get("epic") or "").strip()
 				coc = (entry.get("coc") or "").strip()
 				brawl = (entry.get("brawl") or "").strip()
+				cocclan = (entry.get("cocclan") or "").strip()
 				lines = []
 				lines.append(f"Steam: {steam if steam else '(non défini)'}")
 				lines.append(f"Epic: {epic if epic else '(non défini)'}")
 				lines.append(f"CoC: {coc if coc else '(non défini)'}")
+				lines.append(f"CoC Clan: {cocclan if cocclan else '(non défini)'}")
 				lines.append(f"Brawl: {brawl if brawl else '(non défini)'}")
-				lines.append("\nPour définir : `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id brawl #TAG`")
-				lines.append("Pour effacer : `!id clear steam|epic|coc|brawl|all`")
+				lines.append(
+					"\nPour définir : `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id cocclan #TAG` • `!id brawl #TAG`"
+				)
+				lines.append("Pour effacer : `!id clear steam|epic|coc|cocclan|brawl|all`")
 				await ctx.send("\n".join(lines))
 				return
 
 			if action_l == "set":
 				if kind_l in {"bs", "brawlstars"}:
 					kind_l = "brawl"
-				if kind_l not in {"steam", "epic", "coc", "brawl"}:
-					await ctx.send("Usage: `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id brawl #TAG`")
+				if kind_l in {"clan"}:
+					kind_l = "cocclan"
+				if kind_l not in {"steam", "epic", "coc", "brawl", "cocclan"}:
+					await ctx.send(
+						"Usage: `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id cocclan #TAG` • `!id brawl #TAG`"
+					)
 					return
 				if not value.strip():
 					await ctx.send(f"Usage: `!id {kind_l} <valeur>`")
 					return
-				# Normalize CoC / Brawl tags to #TAG uppercase
-				if kind_l in {"coc", "brawl"}:
+				# Normalize tags to #TAG uppercase
+				if kind_l in {"coc", "brawl", "cocclan"}:
 					tag = value.strip().upper().replace(" ", "")
 					if not tag.startswith("#"):
 						tag = f"#{tag}"
@@ -878,16 +892,18 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				which = kind_l or "all"
 				if which in {"bs", "brawlstars"}:
 					which = "brawl"
-				if which not in {"steam", "epic", "coc", "brawl", "all"}:
-					await ctx.send("Usage: `!id clear steam|epic|coc|brawl|all`")
+				if which == "clan":
+					which = "cocclan"
+				if which not in {"steam", "epic", "coc", "cocclan", "brawl", "all"}:
+					await ctx.send("Usage: `!id clear steam|epic|coc|cocclan|brawl|all`")
 					return
 				await user_ids.clear(ctx.author.id, which)
 				await ctx.send("OK, identifiant(s) effacé(s).")
 				return
 
 			await ctx.send(
-				"Usage: `!id` (voir), `!id steam <valeur>`, `!id epic <valeur>`, `!id coc #TAG`, `!id brawl #TAG`, "
-				"`!id clear steam|epic|coc|brawl|all`"
+				"Usage: `!id` (voir), `!id steam <valeur>`, `!id epic <valeur>`, `!id coc #TAG`, `!id cocclan #TAG`, `!id brawl #TAG`, "
+				"`!id clear steam|epic|coc|cocclan|brawl|all`"
 			)
 		except Exception as e:
 			print(f"[id_cmd] error: {e}", flush=True)
@@ -1427,7 +1443,53 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
 			tag_raw = pseudo.strip()
 			if not tag_raw:
-				await ctx.send("Tag clan manquant. Exemple: `!stats cocclan #8QGQYV` (avec le #).")
+				entry = await user_ids.get(ctx.author.id)
+				tag_raw = (entry.get("cocclan") or "").strip()
+			if not tag_raw:
+				# Try deriving clan tag from saved CoC player tag
+				entry = await user_ids.get(ctx.author.id)
+				player_tag_raw = (entry.get("coc") or "").strip()
+				if player_tag_raw:
+					player_tag = player_tag_raw.upper()
+					if not player_tag.startswith("#"):
+						player_tag = f"#{player_tag}"
+					encoded_player = quote(player_tag, safe="")
+					player_path = f"players/{encoded_player}"
+					player_cache_key = f"supercell:coc:player:{player_tag}".lower()
+					try:
+						player_obj, _, _ = await api_cache.get_or_set_with_meta(
+							key=player_cache_key,
+							ttl_seconds=TTL_SUPERCELL_SECONDS,
+							factory=lambda: _bearer_get_json_with_proxy_fallback(
+								label="Clash of Clans",
+								token=token,
+								path=player_path,
+								primary_base_url=coc_base_url,
+								proxy_base_url=coc_proxy_url,
+							),
+						)
+						player_payload = {}
+						if (
+							isinstance(player_obj, tuple)
+							and len(player_obj) == 2
+							and isinstance(player_obj[0], dict)
+						):
+							player_payload = player_obj[0]
+						elif isinstance(player_obj, dict):
+							player_payload = player_obj
+						clan_tag = None
+						clan_obj = player_payload.get("clan")
+						if isinstance(clan_obj, dict):
+							clan_tag = (clan_obj.get("tag") or "").strip()
+						if clan_tag:
+							tag_raw = clan_tag
+					except Exception:
+						pass
+			if not tag_raw:
+				await ctx.send(
+					"Tag clan manquant. Exemple: `!stats cocclan #8QGQYV` (avec le #). "
+					"Tu peux aussi l’enregistrer avec `!id cocclan #TAG` (ou enregistrer ton village `!id coc #TAG` pour déduire le clan)."
+				)
 				return
 			tag = tag_raw.upper()
 			if not tag.startswith("#"):
