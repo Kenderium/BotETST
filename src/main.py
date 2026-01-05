@@ -1243,19 +1243,37 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 	async def _mc_status_text() -> str:
 		import asyncio
+		import time
 
 		from mcstatus import JavaServer  # type: ignore
 
 		host, port = _get_mc_target()
 
 		def _probe() -> str:
-			server = JavaServer(host, port)
-			status = server.status()
-			online = getattr(status.players, "online", 0)
-			max_p = getattr(status.players, "max", 0)
-			latency = getattr(status, "latency", None)
-			ms = f"{int(latency)}ms" if latency is not None else "N/A"
-			return f"Minecraft server `{host}:{port}`: {online}/{max_p} players (ping {ms})"
+			try:
+				server = JavaServer(host, port, timeout=5)  # type: ignore[call-arg]
+			except TypeError:
+				server = JavaServer(host, port)
+
+			last_exc: Exception | None = None
+			for attempt in range(2):
+				try:
+					try:
+						status = server.status(timeout=5)  # type: ignore[call-arg]
+					except TypeError:
+						status = server.status()
+					online = getattr(status.players, "online", 0)
+					max_p = getattr(status.players, "max", 0)
+					latency = getattr(status, "latency", None)
+					ms = f"{int(latency)}ms" if latency is not None else "N/A"
+					return f"Minecraft server `{host}:{port}`: {online}/{max_p} players (ping {ms})"
+				except Exception as e:
+					last_exc = e
+					if attempt == 0:
+						time.sleep(0.35)
+						continue
+					break
+			raise last_exc or RuntimeError("Minecraft status failed")
 
 		return await asyncio.to_thread(_probe)
 
@@ -1389,7 +1407,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			war_stars = payload.get("warStars")
 			clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
 			embed = discord.Embed(
-				title="Clash of Clans — Joueur",
+				title="Clash of Clans — Village",
 				description=f"**{name}** ({tag})",
 				color=discord.Color.blurple(),
 			)
@@ -1411,7 +1429,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
 				)
 			elif e.status == 404:
-				await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+				await ctx.send("Village introuvable. Vérifie le tag (avec le #).")
 			elif e.status == 429:
 				await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
 			else:
