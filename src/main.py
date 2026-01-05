@@ -416,14 +416,15 @@ class _PersistentTtlCache:
 
 
 class SupercellHttpError(RuntimeError):
-	def __init__(self, status: int, url: str, payload: object):
-		super().__init__(f"Supercell HTTP {status}")
+	def __init__(self, status: int, url: str, payload: object, *, label: str = "Supercell"):
+		super().__init__(f"{label} HTTP {status}")
 		self.status = status
 		self.url = url
 		self.payload = payload
+		self.label = label
 
 
-async def _supercell_get_json(*, base_url: str, token: str, path: str) -> dict:
+async def _supercell_get_json(*, base_url: str, token: str, path: str, label: str = "Supercell") -> dict:
 	import aiohttp
 
 	url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
@@ -435,10 +436,34 @@ async def _supercell_get_json(*, base_url: str, token: str, path: str) -> dict:
 		async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
 			data = await resp.json(content_type=None)
 			if resp.status >= 400:
-				raise SupercellHttpError(resp.status, url, data)
+				raise SupercellHttpError(resp.status, url, data, label=label)
 			if isinstance(data, dict):
 				return data
-			raise RuntimeError(f"Supercell returned non-object JSON for {url}: {type(data).__name__}")
+			raise RuntimeError(f"{label} returned non-object JSON for {url}: {type(data).__name__}")
+
+
+async def _bearer_get_json_with_proxy_fallback(
+	*,
+	label: str,
+	token: str,
+	path: str,
+	primary_base_url: str,
+	proxy_base_url: str,
+) -> tuple[dict, bool]:
+	"""Try the official API first, then fallback to RoyaleAPI proxy on 401/403.
+
+	This is useful when the official API requires static IP whitelisting.
+	"""
+	primary = (primary_base_url or "").strip()
+	proxy = (proxy_base_url or "").strip()
+	try:
+		payload = await _supercell_get_json(base_url=primary, token=token, path=path, label=label)
+		return payload, False
+	except SupercellHttpError as e:
+		if e.status in {401, 403} and proxy and proxy.rstrip("/") != primary.rstrip("/"):
+			payload = await _supercell_get_json(base_url=proxy, token=token, path=path, label=f"{label} (proxy)")
+			return payload, True
+		raise
 
 
 async def _steam_current_players(*, appid: int) -> int:
@@ -768,7 +793,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			name="Autres",
 			value=(
 				f"`{p}stats lethalcompany` (Steam)\n"
-				f"`{p}stats coc #TAG` • `{p}stats brawl #TAG`\n"
+				f"`{p}stats coc #TAG` • `{p}stats cocclan #TAG`\n"
+				f"`{p}stats brawl #TAG` • `{p}stats cr #TAG`\n"
 				f"`{p}ppc @membre` (pierre papier ciseaux)"
 			),
 			inline=False,
@@ -1312,6 +1338,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats coc #TAG`."
 				)
 				return
+			coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
+			coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
 			tag_raw = pseudo.strip()
 			if not tag_raw:
 				entry = await user_ids.get(ctx.author.id)
@@ -1329,13 +1357,25 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key=cache_key,
 					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _supercell_get_json(
-						base_url="https://api.clashofclans.com/v1",
+					factory=lambda: _bearer_get_json_with_proxy_fallback(
+						label="Clash of Clans",
 						token=token,
 						path=path,
+						primary_base_url=coc_base_url,
+						proxy_base_url=coc_proxy_url,
 					),
 				)
-				payload = payload_obj if isinstance(payload_obj, dict) else {}
+				payload: dict
+				used_proxy = False
+				if (
+					isinstance(payload_obj, tuple)
+					and len(payload_obj) == 2
+					and isinstance(payload_obj[0], dict)
+					and isinstance(payload_obj[1], bool)
+				):
+					payload, used_proxy = payload_obj
+				else:
+					payload = payload_obj if isinstance(payload_obj, dict) else {}
 				name = payload.get("name") or tag
 				th = payload.get("townHallLevel")
 				trophies = payload.get("trophies")
@@ -1352,16 +1392,17 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
 				embed.add_field(name="War stars", value=str(war_stars) if war_stars is not None else "?", inline=True)
 				embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
-				embed.set_footer(
-					text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				)
+				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				if used_proxy:
+					footer = f"{footer} • Proxy RoyaleAPI"
+				embed.set_footer(text=footer)
 				await ctx.send(embed=embed)
 			except SupercellHttpError as e:
 				print(f"CoC HTTP {e.status} for {e.url}: {e.payload}", flush=True)
 				if e.status in {401, 403}:
 					await ctx.send(
-						"Supercell refuse l’accès (401/403). Vérifie `COC_API_TOKEN` "
-						"et l’IP whitelistée sur developer.clashofclans.com."
+						"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
+						"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
 					)
 				elif e.status == 404:
 					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
@@ -1374,6 +1415,101 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				await ctx.send("Impossible de récupérer les infos Clash of Clans.")
 			return
 
+		if game_key in {"cocclan", "coc_clan", "coc-clan", "clan"}:
+			token = os.getenv("COC_API_TOKEN", "").strip()
+			if not token:
+				await ctx.send(
+					"Pour Clash of Clans (clan), il faut un token officiel Supercell + IP whitelistée. "
+					"Ajoute `COC_API_TOKEN` dans ton `.env`, puis utilise: `!stats cocclan #TAG`."
+				)
+				return
+			coc_base_url = os.getenv("COC_API_BASE_URL", "https://api.clashofclans.com/v1").strip() or "https://api.clashofclans.com/v1"
+			coc_proxy_url = os.getenv("COC_PROXY_BASE_URL", "https://cocproxy.royaleapi.dev/v1").strip() or "https://cocproxy.royaleapi.dev/v1"
+			tag_raw = pseudo.strip()
+			if not tag_raw:
+				await ctx.send("Tag clan manquant. Exemple: `!stats cocclan #8QGQYV` (avec le #).")
+				return
+			tag = tag_raw.upper()
+			if not tag.startswith("#"):
+				tag = f"#{tag}"
+			encoded = quote(tag, safe="")
+			path = f"clans/{encoded}"
+			cache_key = f"supercell:coc:clan:{tag}".lower()
+			try:
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key=cache_key,
+					ttl_seconds=TTL_SUPERCELL_SECONDS,
+					factory=lambda: _bearer_get_json_with_proxy_fallback(
+						label="Clash of Clans",
+						token=token,
+						path=path,
+						primary_base_url=coc_base_url,
+						proxy_base_url=coc_proxy_url,
+					),
+				)
+				payload: dict
+				used_proxy = False
+				if (
+					isinstance(payload_obj, tuple)
+					and len(payload_obj) == 2
+					and isinstance(payload_obj[0], dict)
+					and isinstance(payload_obj[1], bool)
+				):
+					payload, used_proxy = payload_obj
+				else:
+					payload = payload_obj if isinstance(payload_obj, dict) else {}
+				name = payload.get("name") or tag
+				level = payload.get("clanLevel")
+				members = payload.get("members")
+				points = payload.get("clanPoints")
+				req = payload.get("requiredTrophies")
+				clan_type = payload.get("type")
+				location = (payload.get("location") or {}).get("name") if isinstance(payload.get("location"), dict) else None
+				war_league = (payload.get("warLeague") or {}).get("name") if isinstance(payload.get("warLeague"), dict) else None
+				war_wins = payload.get("warWins")
+				war_win_streak = payload.get("warWinStreak")
+				embed = discord.Embed(
+					title="Clash of Clans — Clan",
+					description=f"**{name}** ({tag})",
+					color=discord.Color.blurple(),
+				)
+				embed.add_field(name="Niveau", value=str(level) if level is not None else "?", inline=True)
+				embed.add_field(name="Membres", value=str(members) if members is not None else "?", inline=True)
+				embed.add_field(name="Points", value=str(points) if points is not None else "?", inline=True)
+				embed.add_field(name="Req. trophées", value=str(req) if req is not None else "?", inline=True)
+				embed.add_field(name="Type", value=str(clan_type) if clan_type else "?", inline=True)
+				embed.add_field(name="Localisation", value=str(location) if location else "?", inline=True)
+				if war_league:
+					embed.add_field(name="War league", value=str(war_league), inline=True)
+				if war_wins is not None or war_win_streak is not None:
+					embed.add_field(
+						name="Guerres",
+						value=f"Wins: {war_wins if war_wins is not None else '?'} • Streak: {war_win_streak if war_win_streak is not None else '?'}",
+						inline=True,
+					)
+				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				if used_proxy:
+					footer = f"{footer} • Proxy RoyaleAPI"
+				embed.set_footer(text=footer)
+				await ctx.send(embed=embed)
+			except SupercellHttpError as e:
+				print(f"CoC clan HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+				if e.status in {401, 403}:
+					await ctx.send(
+						"Accès refusé (401/403). Vérifie `COC_API_TOKEN` et/ou l’IP whitelistée. "
+						"(Le bot peut aussi passer par le proxy RoyaleAPI: `COC_PROXY_BASE_URL`.)"
+					)
+				elif e.status == 404:
+					await ctx.send("Clan introuvable. Vérifie le tag (avec le #).")
+				elif e.status == 429:
+					await ctx.send("Rate limit Supercell (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send(f"Erreur Supercell HTTP {e.status}. Check les logs.")
+			except Exception as e:
+				print(f"CoC clan error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send("Impossible de récupérer les infos du clan Clash of Clans.")
+			return
+
 		if game_key in {"brawlstars", "brawl", "bs"}:
 			token = os.getenv("BRAWLSTARS_API_TOKEN", "").strip()
 			if not token:
@@ -1382,6 +1518,8 @@ async def build_bot(settings: Settings) -> commands.Bot:
 					"Ajoute `BRAWLSTARS_API_TOKEN` dans ton `.env`, puis utilise: `!stats brawl #TAG`."
 				)
 				return
+			bs_base_url = os.getenv("BRAWLSTARS_API_BASE_URL", "https://api.brawlstars.com/v1").strip() or "https://api.brawlstars.com/v1"
+			bs_proxy_url = os.getenv("BRAWLSTARS_PROXY_BASE_URL", "https://bsproxy.royaleapi.dev/v1").strip() or "https://bsproxy.royaleapi.dev/v1"
 			tag_raw = pseudo.strip()
 			if not tag_raw:
 				entry = await user_ids.get(ctx.author.id)
@@ -1401,13 +1539,25 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
 					key=cache_key,
 					ttl_seconds=TTL_SUPERCELL_SECONDS,
-					factory=lambda: _supercell_get_json(
-						base_url="https://api.brawlstars.com/v1",
+					factory=lambda: _bearer_get_json_with_proxy_fallback(
+						label="Brawl Stars",
 						token=token,
 						path=path,
+						primary_base_url=bs_base_url,
+						proxy_base_url=bs_proxy_url,
 					),
 				)
-				payload = payload_obj if isinstance(payload_obj, dict) else {}
+				payload: dict
+				used_proxy = False
+				if (
+					isinstance(payload_obj, tuple)
+					and len(payload_obj) == 2
+					and isinstance(payload_obj[0], dict)
+					and isinstance(payload_obj[1], bool)
+				):
+					payload, used_proxy = payload_obj
+				else:
+					payload = payload_obj if isinstance(payload_obj, dict) else {}
 				name = payload.get("name") or tag
 				trophies = payload.get("trophies")
 				best = payload.get("highestTrophies")
@@ -1422,14 +1572,18 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
 				embed.add_field(name="Niveau", value=str(exp) if exp is not None else "?", inline=True)
 				embed.add_field(name="Club", value=str(club) if club else "Aucun", inline=True)
-				embed.set_footer(
-					text=_cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
-				)
+				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				if used_proxy:
+					footer = f"{footer} • Proxy RoyaleAPI"
+				embed.set_footer(text=footer)
 				await ctx.send(embed=embed)
 			except SupercellHttpError as e:
 				print(f"BrawlStars HTTP {e.status} for {e.url}: {e.payload}", flush=True)
 				if e.status in {401, 403}:
-					await ctx.send("Supercell refuse l’accès (401/403). Vérifie `BRAWLSTARS_API_TOKEN` et l’IP whitelistée.")
+					await ctx.send(
+						"Accès refusé (401/403). Vérifie `BRAWLSTARS_API_TOKEN` et/ou l’IP whitelistée. "
+						"(Le bot peut aussi passer par le proxy RoyaleAPI: `BRAWLSTARS_PROXY_BASE_URL`.)"
+					)
 				elif e.status == 404:
 					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
 				elif e.status == 429:
@@ -1439,6 +1593,86 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			except Exception as e:
 				print(f"BrawlStars error: {type(e).__name__}: {e}", flush=True)
 				await ctx.send("Impossible de récupérer les infos Brawl Stars.")
+			return
+
+		if game_key in {"clashroyale", "clash royale", "cr"}:
+			token = os.getenv("CLASHROYALE_API_TOKEN", "").strip()
+			if not token:
+				await ctx.send(
+					"Pour Clash Royale, il faut un token API. "
+					"Ajoute `CLASHROYALE_API_TOKEN` dans ton `.env`, puis utilise: `!stats cr #TAG`."
+				)
+				return
+			cr_base_url = os.getenv("CLASHROYALE_API_BASE_URL", "https://api.clashroyale.com/v1").strip() or "https://api.clashroyale.com/v1"
+			cr_proxy_url = os.getenv("CLASHROYALE_PROXY_BASE_URL", "https://proxy.royaleapi.dev/v1").strip() or "https://proxy.royaleapi.dev/v1"
+			tag_raw = pseudo.strip()
+			if not tag_raw:
+				await ctx.send("Tag manquant. Exemple: `!stats cr #2PP` (avec le #).")
+				return
+			tag = tag_raw.upper()
+			if not tag.startswith("#"):
+				tag = f"#{tag}"
+			encoded = quote(tag, safe="")
+			path = f"players/{encoded}"
+			cache_key = f"clashroyale:player:{tag}".lower()
+			try:
+				payload_obj, from_cache, remaining = await api_cache.get_or_set_with_meta(
+					key=cache_key,
+					ttl_seconds=TTL_SUPERCELL_SECONDS,
+					factory=lambda: _bearer_get_json_with_proxy_fallback(
+						label="Clash Royale",
+						token=token,
+						path=path,
+						primary_base_url=cr_base_url,
+						proxy_base_url=cr_proxy_url,
+					),
+				)
+				payload: dict
+				used_proxy = False
+				if (
+					isinstance(payload_obj, tuple)
+					and len(payload_obj) == 2
+					and isinstance(payload_obj[0], dict)
+					and isinstance(payload_obj[1], bool)
+				):
+					payload, used_proxy = payload_obj
+				else:
+					payload = payload_obj if isinstance(payload_obj, dict) else {}
+				name = payload.get("name") or tag
+				trophies = payload.get("trophies")
+				best = payload.get("bestTrophies")
+				arena = (payload.get("arena") or {}).get("name") if isinstance(payload.get("arena"), dict) else None
+				clan = (payload.get("clan") or {}).get("name") if isinstance(payload.get("clan"), dict) else None
+				embed = discord.Embed(
+					title="Clash Royale — Joueur",
+					description=f"**{name}** ({tag})",
+					color=discord.Color.blurple(),
+				)
+				embed.add_field(name="Trophées", value=str(trophies) if trophies is not None else "?", inline=True)
+				embed.add_field(name="Best", value=str(best) if best is not None else "?", inline=True)
+				embed.add_field(name="Arène", value=str(arena) if arena else "?", inline=True)
+				embed.add_field(name="Clan", value=str(clan) if clan else "Aucun", inline=True)
+				footer = _cache_note(from_cache=from_cache, remaining_seconds=remaining, ttl_seconds=TTL_SUPERCELL_SECONDS)
+				if used_proxy:
+					footer = f"{footer} • Proxy RoyaleAPI"
+				embed.set_footer(text=footer)
+				await ctx.send(embed=embed)
+			except SupercellHttpError as e:
+				print(f"ClashRoyale HTTP {e.status} for {e.url}: {e.payload}", flush=True)
+				if e.status in {401, 403}:
+					await ctx.send(
+						"Accès refusé (401/403). Vérifie `CLASHROYALE_API_TOKEN` et/ou l’IP whitelistée. "
+						"(Le bot peut aussi passer par le proxy RoyaleAPI: `CLASHROYALE_PROXY_BASE_URL`.)"
+					)
+				elif e.status == 404:
+					await ctx.send("Joueur introuvable. Vérifie le tag (avec le #).")
+				elif e.status == 429:
+					await ctx.send("Rate limit (429). Réessaye dans quelques secondes.")
+				else:
+					await ctx.send(f"Erreur Clash Royale HTTP {e.status}. Check les logs.")
+			except Exception as e:
+				print(f"ClashRoyale error: {type(e).__name__}: {e}", flush=True)
+				await ctx.send("Impossible de récupérer les infos Clash Royale.")
 			return
 
 		if game_key in {"smite2", "smite 2", "smite_2"}:

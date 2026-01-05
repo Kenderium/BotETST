@@ -67,7 +67,9 @@ journalctl -u etstBotDiscord -f
 - `!stats rocketleague [pseudo]` (si pseudo absent, utilise l’ID Epic enregistré via `!id`)
 - `!stats lethalcompany` (joueurs en ligne globaux via Steam)
 - `!stats coc #TAG` (infos joueur Clash of Clans via API Supercell)
+- `!stats cocclan #TAG` (infos clan Clash of Clans via API Supercell)
 - `!stats brawl #TAG` (infos joueur Brawl Stars via API Supercell)
+- `!stats cr #TAG` (infos joueur Clash Royale via API officielle / proxy RoyaleAPI)
 
 ### Notes permissions (vocal)
 
@@ -110,3 +112,15 @@ Les APIs officielles Supercell nécessitent:
 
 - `COC_API_TOKEN` (optionnel) — permet `!stats coc #TAG`
 - `BRAWLSTARS_API_TOKEN` (optionnel) — permet `!stats brawl #TAG`
+
+Option "backup" si ton IP change: proxies RoyaleAPI (https://docs.royaleapi.com/proxy.html)
+- `COC_API_BASE_URL` (défaut: `https://api.clashofclans.com/v1`)
+- `COC_PROXY_BASE_URL` (défaut: `https://cocproxy.royaleapi.dev/v1`)
+- `BRAWLSTARS_API_BASE_URL` (défaut: `https://api.brawlstars.com/v1`)
+- `BRAWLSTARS_PROXY_BASE_URL` (défaut: `https://bsproxy.royaleapi.dev/v1`)
+
+### Clash Royale
+
+- `CLASHROYALE_API_TOKEN` (optionnel) — permet `!stats cr #TAG`
+- `CLASHROYALE_API_BASE_URL` (défaut: `https://api.clashroyale.com/v1`)
+- `CLASHROYALE_PROXY_BASE_URL` (défaut: `https://proxy.royaleapi.dev/v1`)
