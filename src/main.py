@@ -733,7 +733,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		p = settings.prefix
 		embed = discord.Embed(
 			title="Aide — Bot ETST",
-			description=f"Préfixe: `{p}` • Cache: affiche HIT/MISS + TTL",
+			description=f"Préfixe: `{p}`",
 			color=discord.Color.blurple(),
 		)
 
@@ -750,7 +750,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			value=(
 				f"`{p}stats minecraft`\n"
 				f"`{p}stats ark`\n"
-				f"`{p}stats satisfactory` (port par défaut: 8888)"
+				f"`{p}stats satisfactory`"
 			),
 			inline=False,
 		)
@@ -768,12 +768,13 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			name="Autres",
 			value=(
 				f"`{p}stats lethalcompany` (Steam)\n"
-				f"`{p}stats coc #TAG` • `{p}stats brawl #TAG`"
+				f"`{p}stats coc #TAG` • `{p}stats brawl #TAG`\n"
+				f"`{p}ppc @membre` (pierre papier ciseaux)"
 			),
 			inline=False,
 		)
 		embed.add_field(
-			name="IDs (optionnel)",
+			name="IDs — sauvegarde de pseudos",
 			value=(
 				f"`{p}id steam MonSteam` • `{p}id epic MonEpic`\n"
 				f"`{p}id coc #TAG` • `{p}id brawl #TAG` • `{p}id clear all`"
