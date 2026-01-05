@@ -1,8 +1,6 @@
 import asyncio
 import json
 import os
-import random
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -532,7 +530,7 @@ class _UserIdStore:
 
 	async def set_value(self, user_id: int, key: str, value: str) -> None:
 		key = key.strip().lower()
-		if key not in {"steam", "epic"}:
+		if key not in {"steam", "epic", "coc", "brawl"}:
 			raise ValueError("Invalid key")
 		value = value.strip()
 		lock = await self._get_lock()
@@ -547,7 +545,7 @@ class _UserIdStore:
 
 	async def clear(self, user_id: int, which: str) -> None:
 		which = which.strip().lower() or "all"
-		if which not in {"steam", "epic", "all"}:
+		if which not in {"steam", "epic", "coc", "brawl", "all"}:
 			raise ValueError("Invalid clear option")
 		lock = await self._get_lock()
 		async with lock:
@@ -732,86 +730,57 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 	@bot.command(name="help")
 	async def help_cmd(ctx: commands.Context) -> None:
+		p = settings.prefix
 		embed = discord.Embed(
-			title="Aide — Bot Eternal Storm",
-			description=(
-				"Commandes disponibles (préfixe: "
-				f"`{settings.prefix}`)"
-			),
+			title="Aide — Bot ETST",
+			description=f"Préfixe: `{p}` • Cache: affiche HIT/MISS + TTL",
 			color=discord.Color.blurple(),
 		)
-		p = settings.prefix
-		embed.add_field(name=f"{p}hello", value="Dit bonjour.", inline=True)
-		embed.add_field(name=f"{p}users", value="Nombre de membres sur le serveur.", inline=True)
-		embed.add_field(name=f"{p}damn [@membre]", value="Damn quelqu'un (ou juste 'Damn.').", inline=True)
+
 		embed.add_field(
-			name=f"{p}ppc @membre",
+			name="Général",
 			value=(
-				"Pierre-Papier-Ciseaux (1 manche). Vous devez être dans le même vocal. "
-				"Choix en DM via réactions 🪨📄✂️."
-			),
-			inline=False,
-		)
-		embed.add_field(name=f"{p}hi [XXX]", value="Invoque quelqu'un (DJ, Nicoow, Lucas, Grimdal, Kenderium, etc.) ou toi si rien n'est spécifié.", inline=True)
-		embed.add_field(
-			name=f"{p}id",
-			value=(
-				"Enregistre/affiche tes IDs Steam/Epic. "
-				"Ex: `!id steam MonSteam` • `!id epic MonEpic` • `!id clear all`"
+				f"`{p}hello` ` {p}users` ` {p}damn [@membre]`\n"
+				f"`{p}hi [nom]`"
 			),
 			inline=False,
 		)
 		embed.add_field(
-			name=f"{p}stats minecraft",
-			value="Status du serveur Minecraft (joueurs en ligne).",
-			inline=False,
-		)
-		embed.add_field(
-			name=f"{p}stats ark",
-			value="Joueurs en ligne sur le serveur ARK ETST1 (Fjordur / VAC).",
-			inline=False,
-		)
-		embed.add_field(
-			name=f"{p}stats smite2 <pseudo>",
-			value="Stats profil Smite 2 (via TRN). Ex: `!stats smite2 steam:Pseudo`",
-			inline=False,
-		)
-		embed.add_field(
-			name=f"{p}stats rocketleague <pseudo>",
+			name="Jeux — serveurs",
 			value=(
-				"Stats Rocket League (RapidAPI). Exemples:\n"
-				f"• `{settings.prefix}stats rocketleague epic:TonPseudo`\n"
-				f"• `{settings.prefix}stats rocketleague TonDisplayNameEpic`"
+				f"`{p}stats minecraft`\n"
+				f"`{p}stats ark`\n"
+				f"`{p}stats satisfactory` (port par défaut: 8888)"
 			),
 			inline=False,
 		)
 		embed.add_field(
-			name=f"{p}stats rl tournaments",
-			value="Tournois Rocket League en Europe",
-			inline=False,
-		)
-		embed.add_field(
-			name=f"{p}stats rl shop",
-			value="Shop Rocket League (featured items)",
-			inline=False,
-		)
-		embed.add_field(
-			name=f"{p}stats smite1 <pseudo>",
-			value="Stats profil Smite 1 (via TRN). Ex: `!stats smite1 steam:Pseudo`",
-			inline=False,
-		)
-		embed.add_field(
-			name="Astuce",
+			name="Jeux — profils",
 			value=(
-				"Tu peux enregistrer tes pseudos une fois pour toutes :\n"
-				"• `!id steam <ton_steam>`\n"
-				"• `!id epic <ton_epic>`\n"
-				"Puis utiliser `!stats smite1` / `!stats smite2` / `!stats rocketleague` sans préciser le pseudo.\n"
-				"Pour Rocket League (rocket-league1), préfère `epic:<ton_pseudo>` (la plateforme `steam:` est ignorée)."
+				f"`{p}stats smite1 [steam:Pseudo]`\n"
+				f"`{p}stats smite2 [steam:Pseudo]`\n"
+				f"`{p}stats rocketleague [epic:Pseudo]`\n"
+				f"`{p}stats rl tournaments` • `{p}stats rl shop`"
 			),
 			inline=False,
 		)
-		embed.set_footer(text="Eternal Storm — Smite, Overwatch 2, Rocket League, Ark, Minecraft, Fortnite, etc.")
+		embed.add_field(
+			name="Autres",
+			value=(
+				f"`{p}stats lethalcompany` (Steam)\n"
+				f"`{p}stats coc #TAG` • `{p}stats brawl #TAG`"
+			),
+			inline=False,
+		)
+		embed.add_field(
+			name="IDs (optionnel)",
+			value=(
+				f"`{p}id steam MonSteam` • `{p}id epic MonEpic`\n"
+				f"`{p}id coc #TAG` • `{p}id brawl #TAG` • `{p}id clear all`"
+			),
+			inline=False,
+		)
+		embed.set_footer(text="Rocket League: préfère `epic:<pseudo>` (rocket-league1 ignore steam:)")
 		await ctx.send(embed=embed)
 
 	@bot.command(name="id")
@@ -830,9 +799,9 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			action_l = (action or "").strip().lower()
 			kind_l = (kind or "").strip().lower()
 
-			# Shorthand: !id steam <value> / !id epic <value>
-			if action_l in {"steam", "epic"}:
-				kind_l = action_l
+			# Shorthand: !id steam <value> / !id epic <value> / !id coc #TAG / !id brawl #TAG
+			if action_l in {"steam", "epic", "coc", "brawl", "bs", "brawlstars"}:
+				kind_l = "brawl" if action_l in {"bs", "brawlstars"} else action_l
 				action_l = "set"
 				# value is already in `kind`+`value`? In this shorthand form, `kind` is the first word after action.
 				# With signature (action, kind, *, value), shorthand gives action=steam, kind=<first token of value>.
@@ -845,37 +814,54 @@ async def build_bot(settings: Settings) -> commands.Bot:
 
 			if action_l in {"", "show", "get"}:
 				entry = await user_ids.get(ctx.author.id)
-				steam = entry.get("steam")
-				epic = entry.get("epic")
+				steam = (entry.get("steam") or "").strip()
+				epic = (entry.get("epic") or "").strip()
+				coc = (entry.get("coc") or "").strip()
+				brawl = (entry.get("brawl") or "").strip()
 				lines = []
 				lines.append(f"Steam: {steam if steam else '(non défini)'}")
 				lines.append(f"Epic: {epic if epic else '(non défini)'}")
-				lines.append("\nPour définir : `!id steam <valeur>` ou `!id epic <valeur>`")
-				lines.append("Pour effacer : `!id clear steam|epic|all`")
+				lines.append(f"CoC: {coc if coc else '(non défini)'}")
+				lines.append(f"Brawl: {brawl if brawl else '(non défini)'}")
+				lines.append("\nPour définir : `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id brawl #TAG`")
+				lines.append("Pour effacer : `!id clear steam|epic|coc|brawl|all`")
 				await ctx.send("\n".join(lines))
 				return
 
 			if action_l == "set":
-				if kind_l not in {"steam", "epic"}:
-					await ctx.send("Usage: `!id steam <valeur>` ou `!id epic <valeur>`")
+				if kind_l in {"bs", "brawlstars"}:
+					kind_l = "brawl"
+				if kind_l not in {"steam", "epic", "coc", "brawl"}:
+					await ctx.send("Usage: `!id steam <valeur>` • `!id epic <valeur>` • `!id coc #TAG` • `!id brawl #TAG`")
 					return
 				if not value.strip():
 					await ctx.send(f"Usage: `!id {kind_l} <valeur>`")
 					return
+				# Normalize CoC / Brawl tags to #TAG uppercase
+				if kind_l in {"coc", "brawl"}:
+					tag = value.strip().upper().replace(" ", "")
+					if not tag.startswith("#"):
+						tag = f"#{tag}"
+					value = tag
 				await user_ids.set_value(ctx.author.id, kind_l, value)
 				await ctx.send(f"OK, {kind_l} enregistré.")
 				return
 
 			if action_l == "clear":
 				which = kind_l or "all"
-				if which not in {"steam", "epic", "all"}:
-					await ctx.send("Usage: `!id clear steam|epic|all`")
+				if which in {"bs", "brawlstars"}:
+					which = "brawl"
+				if which not in {"steam", "epic", "coc", "brawl", "all"}:
+					await ctx.send("Usage: `!id clear steam|epic|coc|brawl|all`")
 					return
 				await user_ids.clear(ctx.author.id, which)
 				await ctx.send("OK, identifiant(s) effacé(s).")
 				return
 
-			await ctx.send("Usage: `!id` (voir), `!id steam <valeur>`, `!id epic <valeur>`, `!id clear steam|epic|all`")
+			await ctx.send(
+				"Usage: `!id` (voir), `!id steam <valeur>`, `!id epic <valeur>`, `!id coc #TAG`, `!id brawl #TAG`, "
+				"`!id clear steam|epic|coc|brawl|all`"
+			)
 		except Exception as e:
 			print(f"[id_cmd] error: {e}", flush=True)
 			await ctx.send("Erreur interne lors de la gestion des IDs.")
@@ -1154,10 +1140,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 		raw = os.getenv("SATISFACTORY_SERVER", "").strip()
 		if not raw:
 			raise RuntimeError(
-				"SATISFACTORY_SERVER is missing (example: etst.duckdns.org:7779). "
+				"SATISFACTORY_SERVER is missing (example: etst.duckdns.org:8888). "
 				"Note: this should be the server query port (A2S)."
 			)
-		return _split_host_port(raw, 7779)
+		return _split_host_port(raw, 8888)
 
 	async def _ark_status_text_etst1() -> str:
 		import asyncio
@@ -1295,7 +1281,7 @@ async def build_bot(settings: Settings) -> commands.Bot:
 			except Exception as e:
 				await ctx.send(
 					"Impossible de récupérer le status Satisfactory. "
-					"Vérifie `SATISFACTORY_SERVER` (IP:port query). Port attendu: `7779`."
+					"Vérifie `SATISFACTORY_SERVER` (IP:port query). Port attendu: `8888`."
 				)
 				print(f"Satisfactory status error: {type(e).__name__}: {e}", flush=True)
 			return
@@ -1327,7 +1313,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				return
 			tag_raw = pseudo.strip()
 			if not tag_raw:
-				await ctx.send("Tag manquant. Exemple: `!stats coc #2PP` (avec le #).")
+				entry = await user_ids.get(ctx.author.id)
+				tag_raw = (entry.get("coc") or "").strip()
+			if not tag_raw:
+				await ctx.send("Tag manquant. Exemple: `!stats coc #2PP` (avec le #) ou enregistre-le avec `!id coc #2PP`.")
 				return
 			tag = tag_raw.upper()
 			if not tag.startswith("#"):
@@ -1394,7 +1383,12 @@ async def build_bot(settings: Settings) -> commands.Bot:
 				return
 			tag_raw = pseudo.strip()
 			if not tag_raw:
-				await ctx.send("Tag manquant. Exemple: `!stats brawl #2PP` (avec le #).")
+				entry = await user_ids.get(ctx.author.id)
+				tag_raw = (entry.get("brawl") or "").strip()
+			if not tag_raw:
+				await ctx.send(
+					"Tag manquant. Exemple: `!stats brawl #2PP` (avec le #) ou enregistre-le avec `!id brawl #2PP`."
+				)
 				return
 			tag = tag_raw.upper()
 			if not tag.startswith("#"):

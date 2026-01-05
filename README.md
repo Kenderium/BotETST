@@ -79,7 +79,7 @@ journalctl -u etstBotDiscord -f
 - `DISCORD_TOKEN` (obligatoire)
 - `MINECRAFT_SERVER` (ex: `play.example.com:25565`)
 - `ARK_ETST1_SERVER` (port query Steam/A2S, ex: `play.example.com:27015`)
-- `SATISFACTORY_SERVER` (port query/A2S, ex: `play.example.com:7779`)
+- `SATISFACTORY_SERVER` (port query/A2S, ex: `play.example.com:8888`)
 
 ### Tracker Network (TRN) — stats profils
 
