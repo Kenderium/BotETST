@@ -10,6 +10,19 @@ WorkingDirectory=/home/jeux/BotDiscord/BotETST
 User=jeux
 Group=jeux
 
+# Resource accounting / limits (helps reduce RAM/CPU usage)
+CPUAccounting=true
+MemoryAccounting=true
+TasksAccounting=true
+
+# Tune if needed: if you see OOMKills in `journalctl -u etstBotDiscord`, raise MemoryMax.
+MemoryMax=300M
+
+# Bot is mostly idle; limit CPU and lower priority.
+CPUQuota=30%
+Nice=10
+IOSchedulingClass=idle
+
 # Create a venv in /home/jeux/BotDiscord/BotETST/.venv and install requirements
 ExecStart=/home/jeux/BotDiscord/BotETST/.venv/bin/python -m src.main
 Restart=on-failure

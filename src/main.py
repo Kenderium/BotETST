@@ -709,11 +709,16 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	intents = discord.Intents.default()
 	# Required for prefix commands in discord.py v2+.
 	intents.message_content = True
-	intents.members = True
+	# Disable privileged members intent to reduce memory usage (we mostly rely on mentions / IDs).
+	intents.members = False
 
 	bot = commands.Bot(
 		command_prefix=settings.prefix,
 		intents=intents,
+		# Reduce memory footprint (no member cache, smaller message cache).
+		member_cache_flags=discord.MemberCacheFlags.none(),
+		max_messages=200,
+		chunk_guilds_at_startup=False,
 		help_command=None,
 	)
 
@@ -736,6 +741,10 @@ async def build_bot(settings: Settings) -> commands.Bot:
 	async def on_ready() -> None:
 		if bot.user is None:
 			return
+		await bot.change_presence(
+			status=discord.Status.online,
+			activity=discord.Game(name="Loving Smite 2"),
+		)
 		print(f"ETST connected as {bot.user} (id={bot.user.id})", flush=True)
 
 	@bot.event
